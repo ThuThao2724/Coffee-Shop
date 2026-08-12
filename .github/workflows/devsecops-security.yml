@@ -1,0 +1,128 @@
+name: DevSecOps Security
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["main", "develop", "f3"]
+  push:
+    branches: ["main", "develop", "f3"]
+
+concurrency:
+  group: devsecops-security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  npm-audit:
+    name: NPM Audit (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: apps/backend/api-gateway
+            artifact: api-gateway
+          - service: apps/backend/order-service
+            artifact: order-service
+          - service: apps/backend/chat-service
+            artifact: chat-service
+          - service: apps/backend/inventory-service
+            artifact: inventory-service
+          - service: apps/backend/payment-service
+            artifact: payment-service
+          - service: apps/backend/report-service
+            artifact: report-service
+          - service: apps/frontend
+            artifact: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.19"
+          cache: npm
+          cache-dependency-path: ${{ matrix.service }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.service }}
+        run: npm ci
+
+      - name: Audit high and critical vulnerabilities
+        working-directory: ${{ matrix.service }}
+        run: npm audit --audit-level=high --json > npm-audit.json || true
+
+      - name: Upload npm audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-${{ matrix.artifact }}
+          path: ${{ matrix.service }}/npm-audit.json
+
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  trivy-fs-scan:
+    name: Trivy Filesystem Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+  dockerfile-scan:
+    name: Trivy Image Config Scan (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - apps/backend/api-gateway
+          - apps/backend/order-service
+          - apps/backend/chat-service
+          - apps/backend/inventory-service
+          - apps/backend/payment-service
+          - apps/backend/report-service
+          - apps/backend/user-service
+          - apps/backend/table-service
+          - apps/frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Trivy config scanner
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: config
+          scan-ref: ${{ matrix.service }}
+          severity: CRITICAL,HIGH
+          exit-code: "0"

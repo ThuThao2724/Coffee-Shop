@@ -1,0 +1,70 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model ChatSession {
+  id            String     @id @default(cuid())
+  branchId      String
+  tableId       String
+  customerName  String?
+  customerPhone String?
+  status        ChatStatus @default(OPEN)
+  startedBy     String?
+  startedAt     DateTime   @default(now())
+  closedBy      String?
+  closedAt      DateTime?
+  updatedAt     DateTime   @updatedAt
+
+  messages      ChatMessage[]
+
+  @@map("chat_session")
+  @@index([branchId, status])
+  @@index([tableId, status])
+}
+
+model ChatMessage {
+  id         String     @id @default(cuid())
+  sessionId  String
+  senderType SenderType
+  senderId   String?
+  senderName String
+  content    String
+  isRead     Boolean    @default(false)
+  createdAt  DateTime   @default(now())
+
+  session    ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("chat_message")
+  @@index([sessionId, createdAt])
+}
+
+model NotificationLog {
+  id          String   @id @default(cuid())
+  branchId    String
+  type        String
+  payload     Json
+  targetRoles String[] @default([])
+  userId      String?
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime?
+
+  @@map("notification_log")
+  @@index([branchId, isRead, createdAt(sort: Desc)])
+  @@index([userId, isRead])
+}
+
+enum ChatStatus {
+  OPEN
+  CLOSED
+}
+
+enum SenderType {
+  CUSTOMER
+  STAFF
+}

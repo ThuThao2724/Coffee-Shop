@@ -1,0 +1,2424 @@
+import asyncio
+import hashlib
+import math
+import os
+import re
+import time
+from urllib import request as urlrequest
+from datetime import datetime, timedelta, timezone
+from functools import wraps
+from typing import Any
+from uuid import uuid4
+
+import psycopg
+import sqlparse
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import PlainTextResponse
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
+from pydantic import BaseModel, Field
+
+
+app = FastAPI(title="coffee-ai-service", version="0.3.0")
+
+REQUEST_COUNT = Counter("ai_requests_total", "Total AI requests", ["endpoint", "status"])
+REQUEST_LATENCY = Histogram("ai_request_latency_seconds", "AI request latency", ["endpoint"])
+RESPONSE_SOURCE_COUNT = Counter("ai_response_source_total", "AI response source counter", ["endpoint", "source"])
+PREDICTION_ERROR_GAUGE = Gauge("ai_prediction_error_mape", "Latest prediction error (MAPE)")
+DATA_FRESHNESS_MINUTES = Gauge("ai_data_freshness_minutes", "Latest data freshness in minutes")
+SENTIMENT_SOURCE_COUNT = Counter("ai_sentiment_source_total", "Sentiment source usage", ["source", "status"])
+
+REPORT_DATABASE_URL = os.getenv("REPORT_DATABASE_URL", "").strip()
+CHATBOT_SQL_TIMEOUT_MS = int(os.getenv("AI_CHATBOT_SQL_TIMEOUT_MS", "2000"))
+CHATBOT_MAX_ROWS = int(os.getenv("AI_CHATBOT_MAX_ROWS", "200"))
+AI_ROLLOUT_PERCENT = int(os.getenv("AI_ROLLOUT_PERCENT", "10"))
+AI_ACTIVE_MODEL_VERSION = os.getenv("AI_ACTIVE_MODEL_VERSION", "baseline_v1")
+AI_STAGING_MODEL_VERSION = os.getenv("AI_STAGING_MODEL_VERSION", "baseline_v2_candidate")
+KB_REFRESH_INTERVAL_MINUTES = int(os.getenv("AI_KB_REFRESH_INTERVAL_MINUTES", "30"))
+AI_FORECAST_CRON_ENABLED = os.getenv("AI_FORECAST_CRON_ENABLED", "true").strip().lower() in {"1", "true", "yes"}
+AI_FORECAST_CRON_HOUR_UTC = int(os.getenv("AI_FORECAST_CRON_HOUR_UTC", "19"))  # 02:00 ICT ~= 19:00 UTC (previous day)
+CHAT_SERVICE_API_URL = os.getenv("CHAT_SERVICE_API_URL", "http://chat-service:3007/api/chats").strip().rstrip("/")
+AI_ENFORCE_RBAC = os.getenv("AI_ENFORCE_RBAC", "false").strip().lower() in {"1", "true", "yes"}
+AI_ALLOW_LEGACY_NO_AUTH = os.getenv("AI_ALLOW_LEGACY_NO_AUTH", "true").strip().lower() in {"1", "true", "yes"}
+AI_RATE_LIMIT_PER_MINUTE = int(os.getenv("AI_RATE_LIMIT_PER_MINUTE", "120"))
+AI_RATE_LIMIT_REPORT_CHAT_PER_MINUTE = int(os.getenv("AI_RATE_LIMIT_REPORT_CHAT_PER_MINUTE", "30"))
+AI_RATE_LIMIT_CHAT_PER_MINUTE = int(os.getenv("AI_RATE_LIMIT_CHAT_PER_MINUTE", "60"))
+AI_SENTIMENT_GEMINI_API_KEY = os.getenv("AI_SENTIMENT_GEMINI_API_KEY", "").strip()
+AI_SENTIMENT_GEMINI_MODEL = os.getenv("AI_SENTIMENT_GEMINI_MODEL", "gemini-1.5-flash").strip() or "gemini-1.5-flash"
+AI_SENTIMENT_GEMINI_TIMEOUT_MS = int(os.getenv("AI_SENTIMENT_GEMINI_TIMEOUT_MS", "2500"))
+AI_SENTIMENT_QUALITY_LOOKBACK_HOURS = int(os.getenv("AI_SENTIMENT_QUALITY_LOOKBACK_HOURS", "24"))
+
+DEFAULT_MENU_KB = [
+    {"keyword": "cà phê", "answer": "Nhóm cà phê đang có các món truyền thống, latte, cappuccino và espresso."},
+    {"keyword": "trà", "answer": "Nhóm trà có nhiều lựa chọn trái cây và trà sữa theo chi nhánh."},
+    {"keyword": "giờ mở cửa", "answer": "Quán mở cửa từ 07:00 đến 22:00 hàng ngày."},
+    {"keyword": "khuyến mãi", "answer": "Bạn có thể xem khuyến mãi đang chạy ở mục Khuyến mãi theo chi nhánh."},
+]
+
+POSITIVE_WORD_WEIGHTS: dict[str, float] = {
+    "tot": 1.0,
+    "ngon": 1.2,
+    "tuyet": 1.4,
+    "hailong": 1.3,
+    "nhanh": 0.8,
+    "thanthien": 1.1,
+    "sach": 0.7,
+    "good": 1.0,
+    "great": 1.2,
+    "excellent": 1.5,
+    "friendly": 1.0,
+}
+NEGATIVE_WORD_WEIGHTS: dict[str, float] = {
+    "te": 1.3,
+    "do": 1.0,
+    "cham": 1.1,
+    "lau": 1.1,
+    "khonghailong": 1.4,
+    "hetmon": 1.5,
+    "khophucvu": 1.2,
+    "thaidoxau": 1.6,
+    "bad": 1.1,
+    "poor": 1.2,
+    "awful": 1.5,
+}
+
+ISSUE_TOPIC_KEYWORDS: dict[str, set[str]] = {
+    "cho_lau": {"cho", "cho_lau", "cham", "lau", "doi", "tre"},
+    "het_mon": {"het", "het_mon", "khong_co", "out_of_stock", "sold_out"},
+    "thai_do": {"thai_do", "nhan_vien", "tho_lo", "khophucvu", "cau_gat", "bat_lich_su"},
+    "chat_luong": {"do", "te", "nhat", "nguoi", "khong_ngon", "chat_luong"},
+    "gia_ca": {"gia", "dat", "mac", "phi", "khong_xung_dang"},
+}
+
+
+class RecommendationFeedback(BaseModel):
+    branchId: str
+    sourceItemId: str | None = None
+    targetItemId: str | None = None
+    action: str
+    event: str | None = None
+    experimentGroup: str | None = None
+    customerId: str | None = None
+    sessionId: str | None = None
+
+
+class RecommendationPayload(BaseModel):
+    branchId: str
+    cartItemIds: list[str] = Field(default_factory=list)
+    customerId: str | None = None
+    limit: int = 3
+
+
+class ResolveAnomalyPayload(BaseModel):
+    note: str | None = None
+
+
+class AnomalyDetectPayload(BaseModel):
+    branchId: str
+    type: str = "ORDER_QTY"
+    value: float
+    baselineMean: float
+    baselineStd: float = 0
+    referenceId: str | None = None
+    referenceType: str | None = None
+    description: str | None = None
+
+
+class SentimentAnalyzePayload(BaseModel):
+    branchId: str
+    text: str
+    sourceType: str = "CHAT"
+    sourceId: str | None = None
+
+
+class ForecastRebuildPayload(BaseModel):
+    branchId: str
+    days: int = 7
+    granularity: str = "daily"
+
+
+class ChatPayload(BaseModel):
+    branchId: str | None = None
+    sessionId: str | None = None
+    tableId: str | None = None
+    question: str | None = None
+    message: str | None = None
+
+
+class ReportChatPayload(BaseModel):
+    branchId: str | None = None
+    userId: str | None = None
+    role: str = "MANAGER"
+    question: str
+
+
+class RetentionRunPayload(BaseModel):
+    salesForecastDays: int = 180
+    anomalyDays: int = 365
+    chatbotLogDays: int = 90
+
+
+ANOMALIES: list[dict[str, Any]] = [
+    {
+        "id": "anomaly-seed-1",
+        "branchId": "branch-e2e",
+        "alertType": "REVENUE",
+        "severity": "MEDIUM",
+        "description": "Revenue dropped compared to previous 7-day average.",
+        "isResolved": False,
+        "detectedAt": datetime.now(timezone.utc).isoformat(),
+    }
+]
+CHAT_HISTORY: list[dict[str, Any]] = []
+KB_STATE: dict[str, Any] = {
+    "lastReloadAt": datetime.now(timezone.utc).isoformat(),
+    "source": "bootstrap",
+}
+FORECAST_CRON_STATE: dict[str, Any] = {"running": False, "lastRunAt": None}
+RATE_LIMIT_COUNTERS: dict[str, dict[str, int]] = {}
+SOURCE_TRACKING: dict[str, dict[str, int]] = {}
+FALLBACK_TREND_HISTORY: dict[str, list[dict[str, Any]]] = {}
+FALLBACK_TREND_MAX_POINTS = int(os.getenv("AI_FALLBACK_TREND_MAX_POINTS", "240"))
+RECOMMEND_AB_EVENTS: list[dict[str, Any]] = []
+RECOMMEND_AB_EVENT_LIMIT = int(os.getenv("AI_RECOMMEND_AB_EVENT_LIMIT", "2000"))
+AI_RECOMMEND_AB_TREATMENT_PERCENT = int(os.getenv("AI_RECOMMEND_AB_TREATMENT_PERCENT", "50"))
+AI_RECOMMEND_AB_MIN_SAMPLE_PER_GROUP = int(os.getenv("AI_RECOMMEND_AB_MIN_SAMPLE_PER_GROUP", "120"))
+SENTIMENT_TELEMETRY: dict[str, Any] = {
+    "totals": {"requests": 0, "geminiSuccess": 0, "geminiError": 0, "fallbackLexicon": 0},
+    "confidenceSum": {"gemini": 0.0, "fallback": 0.0},
+    "confidenceCount": {"gemini": 0, "fallback": 0},
+    "lastError": None,
+    "lastUpdatedAt": None,
+}
+EMAIL_REDACT_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+PHONE_REDACT_RE = re.compile(r"(?<!\d)(?:\+?84|0)\d{8,10}(?!\d)")
+
+
+@app.middleware("http")
+async def attach_correlation_id(request: Request, call_next):
+    request_id = str(request.headers.get("x-request-id") or request.headers.get("x-correlation-id") or f"ai-{uuid4()}")
+    request.state.correlation_id = request_id
+    response: Response = await call_next(request)
+    response.headers["x-request-id"] = request_id
+    return response
+
+
+def metric_guard(endpoint: str):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                result = func(*args, **kwargs)
+                REQUEST_COUNT.labels(endpoint=endpoint, status="success").inc()
+                return result
+            except Exception:
+                REQUEST_COUNT.labels(endpoint=endpoint, status="error").inc()
+                raise
+            finally:
+                REQUEST_LATENCY.labels(endpoint=endpoint).observe(time.perf_counter() - start)
+
+        return wrapper
+
+    return decorator
+
+
+def json_dumps(obj: dict[str, Any]) -> str:
+    import json
+
+    return json.dumps(obj, ensure_ascii=False)
+
+
+def redact_pii_text(text: str | None) -> str:
+    raw = str(text or "")
+    masked = EMAIL_REDACT_RE.sub("[redacted_email]", raw)
+    masked = PHONE_REDACT_RE.sub("[redacted_phone]", masked)
+    return masked
+
+
+def redact_pii_metadata(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): redact_pii_metadata(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_pii_metadata(item) for item in value]
+    if isinstance(value, str):
+        return redact_pii_text(value)
+    return value
+
+
+def normalize_branch_id(value: str | None) -> str:
+    branch_id = str(value or "").strip()
+    if not branch_id:
+        raise HTTPException(status_code=400, detail="branchId is required")
+    return branch_id
+
+
+def normalize_limit(value: int, lower: int = 1, upper: int = 10) -> int:
+    if value < lower or value > upper:
+        raise HTTPException(status_code=400, detail=f"limit must be between {lower} and {upper}")
+    return value
+
+
+def authorize_request(
+    request: Request,
+    branch_id: str | None,
+    allowed_roles: set[str],
+) -> dict[str, str]:
+    role = str(request.headers.get("x-actor-role") or request.headers.get("x-user-role") or "").strip().upper()
+    actor_branch_id = str(request.headers.get("x-actor-branch-id") or request.headers.get("x-branch-id") or "").strip()
+    actor_user_id = str(request.headers.get("x-actor-user-id") or request.headers.get("x-user-id") or "").strip()
+
+    if not role:
+        if AI_ENFORCE_RBAC and not AI_ALLOW_LEGACY_NO_AUTH:
+            raise HTTPException(status_code=401, detail="Missing actor role")
+        return {"role": "LEGACY", "branchId": actor_branch_id, "userId": actor_user_id}
+
+    if role not in allowed_roles:
+        raise HTTPException(status_code=403, detail="Insufficient role for this endpoint")
+
+    if role == "MANAGER" and branch_id and actor_branch_id and actor_branch_id != branch_id:
+        raise HTTPException(status_code=403, detail="Manager cannot access other branch scope")
+
+    return {"role": role, "branchId": actor_branch_id, "userId": actor_user_id}
+
+
+def enforce_rate_limit(request: Request, scope: str, max_per_minute: int) -> None:
+    if max_per_minute <= 0:
+        return
+    client_ip = str(getattr(request.client, "host", "") or "unknown")
+    actor_id = str(request.headers.get("x-actor-user-id") or request.headers.get("x-user-id") or "").strip()
+    actor_key = actor_id or client_ip
+    key = f"{scope}:{actor_key}"
+    now = int(time.time())
+    bucket = RATE_LIMIT_COUNTERS.get(key)
+    if not bucket or now >= int(bucket.get("resetAt", 0)):
+        RATE_LIMIT_COUNTERS[key] = {"count": 1, "resetAt": now + 60}
+        return
+    current_count = int(bucket.get("count", 0)) + 1
+    bucket["count"] = current_count
+    if current_count > max_per_minute:
+        raise HTTPException(status_code=429, detail=f"Rate limit exceeded for {scope}")
+
+
+def track_response_source(endpoint: str, source: str) -> None:
+    normalized_endpoint = str(endpoint or "unknown").strip().lower()
+    normalized_source = str(source or "unknown").strip().lower()
+    if not normalized_endpoint:
+        normalized_endpoint = "unknown"
+    if not normalized_source:
+        normalized_source = "unknown"
+    RESPONSE_SOURCE_COUNT.labels(endpoint=normalized_endpoint, source=normalized_source).inc()
+    bucket = SOURCE_TRACKING.get(normalized_endpoint) or {}
+    bucket[normalized_source] = int(bucket.get(normalized_source, 0)) + 1
+    SOURCE_TRACKING[normalized_endpoint] = bucket
+
+    point = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "source": normalized_source,
+    }
+    timeline = FALLBACK_TREND_HISTORY.get(normalized_endpoint) or []
+    timeline.append(point)
+    if len(timeline) > max(20, FALLBACK_TREND_MAX_POINTS):
+        timeline = timeline[-max(20, FALLBACK_TREND_MAX_POINTS):]
+    FALLBACK_TREND_HISTORY[normalized_endpoint] = timeline
+
+
+def assign_recommend_experiment_group(branch_id: str, customer_id: str | None, session_id: str | None) -> str:
+    treatment_percent = max(0, min(AI_RECOMMEND_AB_TREATMENT_PERCENT, 100))
+    if treatment_percent <= 0:
+        return "control"
+    if treatment_percent >= 100:
+        return "treatment"
+    stable_key = f"{branch_id}|{customer_id or ''}|{session_id or ''}"
+    digest = hashlib.sha1(stable_key.encode("utf-8")).hexdigest()
+    bucket = int(digest[:8], 16) % 100
+    return "treatment" if bucket < treatment_percent else "control"
+
+
+def record_recommend_ab_event(
+    *,
+    branch_id: str,
+    group: str,
+    event: str,
+    strategy: str | None = None,
+    customer_id: str | None = None,
+    session_id: str | None = None,
+) -> None:
+    safe_customer_id = ""
+    if customer_id:
+        safe_customer_id = hashlib.sha1(str(customer_id).encode("utf-8")).hexdigest()[:16]
+    safe_session_id = ""
+    if session_id:
+        safe_session_id = hashlib.sha1(str(session_id).encode("utf-8")).hexdigest()[:16]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    event_row = {
+        "timestamp": now_iso,
+        "branchId": branch_id,
+        "group": str(group or "unknown").lower(),
+        "event": str(event or "unknown").lower(),
+        "strategy": str(strategy or "").lower(),
+        "customerId": safe_customer_id,
+        "sessionId": safe_session_id,
+    }
+    RECOMMEND_AB_EVENTS.append(event_row)
+    if len(RECOMMEND_AB_EVENTS) > max(100, RECOMMEND_AB_EVENT_LIMIT):
+        del RECOMMEND_AB_EVENTS[:-RECOMMEND_AB_EVENT_LIMIT]
+    persist_recommend_ab_event(event_row)
+
+
+def build_recommend_ab_summary(branch_id: str, lookback_hours: int = 24) -> dict[str, Any]:
+    safe_hours = max(1, min(lookback_hours, 24 * 14))
+    rows: list[dict[str, Any]] = load_recommend_ab_events(branch_id, safe_hours)
+    by_group: dict[str, dict[str, int]] = {}
+    for item in rows:
+        group = str(item.get("group") or "unknown")
+        event = str(item.get("event") or "unknown")
+        bucket = by_group.get(group) or {"shown": 0, "click": 0, "add_to_cart": 0, "purchase": 0}
+        if event in bucket:
+            bucket[event] += 1
+        by_group[group] = bucket
+    groups: dict[str, Any] = {}
+    for group, values in by_group.items():
+        shown = max(1, int(values.get("shown", 0)))
+        click = int(values.get("click", 0))
+        add_to_cart = int(values.get("add_to_cart", 0))
+        purchase = int(values.get("purchase", 0))
+        groups[group] = {
+            **values,
+            "ctr": round(click / shown, 4),
+            "addToCartRate": round(add_to_cart / shown, 4),
+            "purchaseRate": round(purchase / shown, 4),
+        }
+    treatment = groups.get("treatment") or {"ctr": 0.0, "addToCartRate": 0.0, "purchaseRate": 0.0}
+    control = groups.get("control") or {"ctr": 0.0, "addToCartRate": 0.0, "purchaseRate": 0.0}
+    treatment_shown = int((groups.get("treatment") or {}).get("shown", 0))
+    control_shown = int((groups.get("control") or {}).get("shown", 0))
+    uplift = {
+        "ctr": round(float(treatment["ctr"]) - float(control["ctr"]), 4),
+        "addToCartRate": round(float(treatment["addToCartRate"]) - float(control["addToCartRate"]), 4),
+        "purchaseRate": round(float(treatment["purchaseRate"]) - float(control["purchaseRate"]), 4),
+    }
+    min_sample = max(30, AI_RECOMMEND_AB_MIN_SAMPLE_PER_GROUP)
+
+    def confidence_from_diff(p_treatment: float, p_control: float, n_treatment: int, n_control: int) -> tuple[float, float]:
+        if n_treatment <= 0 or n_control <= 0:
+            return 0.0, 1.0
+        pooled = ((p_treatment * n_treatment) + (p_control * n_control)) / max(1, n_treatment + n_control)
+        se = (pooled * (1 - pooled) * ((1 / max(1, n_treatment)) + (1 / max(1, n_control)))) ** 0.5
+        if se <= 1e-9:
+            return 1.0, 0.0
+        z_score = abs((p_treatment - p_control) / se)
+        cdf = 0.5 * (1 + math.erf(z_score / (2 ** 0.5)))
+        p_value = max(0.0, min(1.0, 2 * (1 - cdf)))
+        confidence = max(0.0, min(1.0, 1 - p_value))
+        return round(confidence, 4), round(p_value, 6)
+
+    ctr_conf, ctr_p = confidence_from_diff(float(treatment["ctr"]), float(control["ctr"]), treatment_shown, control_shown)
+    cart_conf, cart_p = confidence_from_diff(
+        float(treatment["addToCartRate"]),
+        float(control["addToCartRate"]),
+        treatment_shown,
+        control_shown,
+    )
+    purchase_conf, purchase_p = confidence_from_diff(
+        float(treatment["purchaseRate"]),
+        float(control["purchaseRate"]),
+        treatment_shown,
+        control_shown,
+    )
+    sample_ready = treatment_shown >= min_sample and control_shown >= min_sample
+    confidence_ready = ctr_conf >= 0.95 and cart_conf >= 0.95
+    decision_ready = bool(sample_ready and confidence_ready)
+    return {
+        "branchId": branch_id,
+        "lookbackHours": safe_hours,
+        "events": len(rows),
+        "groups": groups,
+        "uplift": uplift,
+        "significance": {
+            "minSamplePerGroup": min_sample,
+            "sampleSize": {"treatment": treatment_shown, "control": control_shown},
+            "sampleReady": sample_ready,
+            "confidence": {
+                "ctr": ctr_conf,
+                "addToCartRate": cart_conf,
+                "purchaseRate": purchase_conf,
+            },
+            "pValue": {
+                "ctr": ctr_p,
+                "addToCartRate": cart_p,
+                "purchaseRate": purchase_p,
+            },
+            "confidenceReady": confidence_ready,
+            "decisionReady": decision_ready,
+        },
+    }
+
+
+def init_recommend_ab_event_store() -> None:
+    if not REPORT_DATABASE_URL:
+        return
+    try:
+        with psycopg.connect(REPORT_DATABASE_URL, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS recommend_ab_event (
+                        id UUID PRIMARY KEY,
+                        "branchId" VARCHAR(64) NOT NULL,
+                        "event" VARCHAR(32) NOT NULL,
+                        "group" VARCHAR(16) NOT NULL,
+                        strategy VARCHAR(64),
+                        "customerKey" VARCHAR(32),
+                        "sessionKey" VARCHAR(32),
+                        "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute('CREATE INDEX IF NOT EXISTS idx_recommend_ab_event_branch_time ON recommend_ab_event ("branchId", "createdAt" DESC)')
+    except Exception:
+        return
+
+
+def persist_recommend_ab_event(event_row: dict[str, Any]) -> None:
+    if not REPORT_DATABASE_URL:
+        return
+    try:
+        with psycopg.connect(REPORT_DATABASE_URL, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO recommend_ab_event (id, "branchId", "event", "group", strategy, "customerKey", "sessionKey", "createdAt")
+                    VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s::timestamptz)
+                    """,
+                    (
+                        str(uuid4()),
+                        str(event_row.get("branchId") or ""),
+                        str(event_row.get("event") or "unknown"),
+                        str(event_row.get("group") or "unknown"),
+                        str(event_row.get("strategy") or ""),
+                        str(event_row.get("customerId") or ""),
+                        str(event_row.get("sessionId") or ""),
+                        str(event_row.get("timestamp") or datetime.now(timezone.utc).isoformat()),
+                    ),
+                )
+    except Exception:
+        return
+
+
+def load_recommend_ab_events(branch_id: str, lookback_hours: int) -> list[dict[str, Any]]:
+    safe_hours = max(1, min(lookback_hours, 24 * 14))
+    if REPORT_DATABASE_URL:
+        try:
+            rows = execute_sql(
+                """
+                SELECT "branchId", "event", "group", strategy, "createdAt"
+                FROM recommend_ab_event
+                WHERE "branchId" = %s
+                  AND "createdAt" >= (NOW() - (%s::int || ' hours')::interval)
+                ORDER BY "createdAt" DESC
+                LIMIT 5000
+                """,
+                [branch_id, safe_hours],
+            )
+            if rows:
+                return [
+                    {
+                        "branchId": str(row.get("branchId") or ""),
+                        "event": str(row.get("event") or "unknown"),
+                        "group": str(row.get("group") or "unknown"),
+                        "strategy": str(row.get("strategy") or ""),
+                        "timestamp": str(row.get("createdAt") or ""),
+                    }
+                    for row in rows
+                ]
+        except Exception:
+            pass
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=safe_hours)
+    fallback_rows: list[dict[str, Any]] = []
+    for item in RECOMMEND_AB_EVENTS:
+        if str(item.get("branchId") or "") != branch_id:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(item.get("timestamp") or ""))
+        except Exception:
+            continue
+        if ts < cutoff:
+            continue
+        fallback_rows.append(item)
+    return fallback_rows
+
+
+def build_fallback_ratio_snapshot() -> dict[str, Any]:
+    endpoint_summary: dict[str, Any] = {}
+    for endpoint, sources in SOURCE_TRACKING.items():
+        total = sum(int(value) for value in sources.values())
+        fallback_count = int(sources.get("fallback", 0))
+        ratio = (fallback_count / total) if total > 0 else 0.0
+        endpoint_summary[endpoint] = {
+            "totalResponses": total,
+            "fallbackResponses": fallback_count,
+            "fallbackRatio": round(ratio, 4),
+            "sources": {key: int(value) for key, value in sources.items()},
+        }
+    return endpoint_summary
+
+
+def build_fallback_trend_snapshot(window_minutes: int = 60, endpoint: str | None = None) -> list[dict[str, Any]]:
+    safe_window = max(5, min(window_minutes, 24 * 60))
+    now = datetime.now(timezone.utc)
+    target_endpoints = [str(endpoint).strip().lower()] if endpoint else list(FALLBACK_TREND_HISTORY.keys())
+    rows: list[dict[str, Any]] = []
+    for ep in target_endpoints:
+        timeline = FALLBACK_TREND_HISTORY.get(ep) or []
+        if not timeline:
+            continue
+        by_bucket: dict[str, dict[str, int]] = {}
+        for point in timeline:
+            try:
+                ts = datetime.fromisoformat(str(point.get("timestamp")))
+            except Exception:
+                continue
+            if (now - ts) > timedelta(minutes=safe_window):
+                continue
+            bucket_key = ts.replace(second=0, microsecond=0).isoformat()
+            bucket = by_bucket.get(bucket_key) or {"total": 0, "fallback": 0}
+            bucket["total"] += 1
+            if str(point.get("source") or "").lower() == "fallback":
+                bucket["fallback"] += 1
+            by_bucket[bucket_key] = bucket
+        for bucket_time in sorted(by_bucket.keys()):
+            total = by_bucket[bucket_time]["total"]
+            fallback = by_bucket[bucket_time]["fallback"]
+            rows.append(
+                {
+                    "endpoint": ep,
+                    "timestamp": bucket_time,
+                    "totalResponses": total,
+                    "fallbackResponses": fallback,
+                    "fallbackRatio": round((fallback / total) if total > 0 else 0.0, 4),
+                }
+            )
+    return rows
+
+
+def build_fallback_trend_summary(window_minutes: int = 120, threshold: float = 0.2) -> list[dict[str, Any]]:
+    rows = build_fallback_trend_snapshot(window_minutes)
+    by_endpoint: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        normalized_endpoint = str(row.get("endpoint") or "").strip().lower()
+        if not normalized_endpoint:
+            continue
+        by_endpoint.setdefault(normalized_endpoint, []).append(row)
+
+    summary_rows: list[dict[str, Any]] = []
+    for endpoint, points in by_endpoint.items():
+        ordered = sorted(points, key=lambda item: str(item.get("timestamp") or ""))
+        ratios = [float(item.get("fallbackRatio") or 0.0) for item in ordered]
+        totals = [int(item.get("totalResponses") or 0) for item in ordered]
+        fallback_totals = [int(item.get("fallbackResponses") or 0) for item in ordered]
+        if not ratios:
+            continue
+        latest_ratio = ratios[-1]
+        first_ratio = ratios[0]
+        delta = latest_ratio - first_ratio
+        trend = "flat"
+        if delta >= 0.03:
+            trend = "up"
+        elif delta <= -0.03:
+            trend = "down"
+        latest_pct = latest_ratio * 100.0
+        delta_pct = max(0.0, delta) * 100.0
+        sample_factor = min(1.0, len(ratios) / 8.0)
+        risk_score = min(100, int(round((latest_pct * 0.75 + delta_pct * 0.25) * sample_factor)))
+        priority = "LOW"
+        if risk_score >= 75:
+            priority = "CRITICAL"
+        elif risk_score >= 55:
+            priority = "HIGH"
+        elif risk_score >= 35:
+            priority = "MEDIUM"
+        summary_rows.append(
+            {
+                "endpoint": endpoint,
+                "samples": len(ratios),
+                "totalResponses": sum(totals),
+                "fallbackResponses": sum(fallback_totals),
+                "avgFallbackRatio": round(sum(ratios) / len(ratios), 4),
+                "maxFallbackRatio": round(max(ratios), 4),
+                "latestFallbackRatio": round(latest_ratio, 4),
+                "trend": trend,
+                "deltaRatio": round(delta, 4),
+                "highFallback": latest_ratio >= threshold,
+                "riskScore": risk_score,
+                "priority": priority,
+            }
+        )
+    summary_rows.sort(
+        key=lambda item: (
+            not bool(item.get("highFallback")),
+            -int(item.get("riskScore") or 0),
+            -float(item.get("latestFallbackRatio") or 0.0),
+        )
+    )
+    return summary_rows
+
+
+def reload_knowledge_base(source: str = "manual") -> dict[str, Any]:
+    # Phase-1 baseline: load from static defaults; ready to swap with DB/API loaders.
+    global DEFAULT_MENU_KB  # pylint: disable=global-statement
+    DEFAULT_MENU_KB = list(DEFAULT_MENU_KB)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    KB_STATE["lastReloadAt"] = now_iso
+    KB_STATE["source"] = source
+    KB_STATE["itemCount"] = len(DEFAULT_MENU_KB)
+    return {"reloadedAt": now_iso, "itemCount": len(DEFAULT_MENU_KB), "source": source}
+
+
+def ensure_kb_fresh() -> None:
+    try:
+        last_reload = datetime.fromisoformat(str(KB_STATE.get("lastReloadAt")))
+    except Exception:
+        last_reload = datetime.now(timezone.utc) - timedelta(minutes=KB_REFRESH_INTERVAL_MINUTES + 1)
+    if datetime.now(timezone.utc) - last_reload >= timedelta(minutes=KB_REFRESH_INTERVAL_MINUTES):
+        reload_knowledge_base(source="auto-interval")
+
+
+def log_audit(
+    endpoint: str,
+    action: str,
+    success: bool = True,
+    branch_id: str | None = None,
+    actor_id: str | None = None,
+    latency_ms: int | None = None,
+    metadata: dict[str, Any] | None = None,
+):
+    if not REPORT_DATABASE_URL:
+        return
+    try:
+        safe_metadata = None if metadata is None else redact_pii_metadata(metadata)
+        with psycopg.connect(REPORT_DATABASE_URL, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO ai_audit_log ("branchId", endpoint, action, "actorId", success, "latencyMs", metadata, "createdAt")
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
+                    """,
+                    (
+                        branch_id,
+                        endpoint,
+                        action,
+                        actor_id,
+                        success,
+                        latency_ms,
+                        "{}" if safe_metadata is None else json_dumps(safe_metadata),
+                    ),
+                )
+    except Exception:
+        return
+
+
+def sanitize_sql(sql: str) -> str:
+    normalized = sqlparse.format(sql, strip_comments=True).strip().rstrip(";")
+    lowered = normalized.lower()
+    blocked = ["insert ", "update ", "delete ", "drop ", "alter ", "create ", "truncate ", "grant ", "revoke "]
+    if any(token in lowered for token in blocked):
+        raise HTTPException(status_code=400, detail="Only read-only SQL is allowed")
+    if not lowered.startswith("select "):
+        raise HTTPException(status_code=400, detail="Only SELECT statements are allowed")
+    return normalized
+
+
+def execute_sql(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    if not REPORT_DATABASE_URL:
+        return []
+    normalized = sanitize_sql(sql)
+    with psycopg.connect(REPORT_DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"SET LOCAL statement_timeout = '{CHATBOT_SQL_TIMEOUT_MS}ms'")
+            cur.execute(normalized, params or [])
+            rows = cur.fetchmany(CHATBOT_MAX_ROWS)
+            cols = [d.name for d in cur.description] if cur.description else []
+    return [{cols[idx]: row[idx] for idx in range(len(cols))} for row in rows]
+
+
+def get_popular_items(branch_id: str, limit: int) -> list[dict[str, Any]]:
+    if not REPORT_DATABASE_URL:
+        return [
+            {
+                "branchMenuItemId": f"popular-{i}",
+                "menuItemId": f"popular-{i}",
+                "name": f"Popular Item {i}",
+                "price": 25000 + i * 5000,
+                "score": round(0.92 - i * 0.08, 2),
+                "reason": "popular",
+            }
+            for i in range(1, limit + 1)
+        ]
+
+    try:
+        rows = execute_sql(
+            """
+            SELECT oi."branchMenuItemId" AS id, COALESCE(SUM(oi.quantity), 0)::int AS qty
+            FROM order_item oi
+            JOIN order_entity o ON o.id = oi."orderId"
+            WHERE o."branchId" = %s
+            GROUP BY oi."branchMenuItemId"
+            ORDER BY qty DESC
+            LIMIT %s
+            """,
+            [branch_id, limit],
+        )
+        items: list[dict[str, Any]] = []
+        for index, row in enumerate(rows):
+            item_id = str(row.get("id") or f"item-{index + 1}")
+            items.append(
+                {
+                    "branchMenuItemId": item_id,
+                    "menuItemId": item_id,
+                    "name": f"Item {item_id[:6]}",
+                    "price": 30000,
+                    "score": round(0.95 - index * 0.08, 2),
+                    "reason": "popular",
+                }
+            )
+        return items
+    except Exception:
+        return []
+
+
+def get_cooccurrence_items(branch_id: str, cart_item_ids: list[str], limit: int) -> list[dict[str, Any]]:
+    if not REPORT_DATABASE_URL or not cart_item_ids:
+        return []
+
+    try:
+        rows = execute_sql(
+            """
+            SELECT oi2."branchMenuItemId" AS id, COUNT(*)::int AS score
+            FROM order_item oi1
+            JOIN order_item oi2 ON oi1."orderId" = oi2."orderId"
+            JOIN order_entity o ON o.id = oi1."orderId"
+            WHERE o."branchId" = %s
+              AND oi1."branchMenuItemId" = ANY(%s)
+              AND oi2."branchMenuItemId" <> ALL(%s)
+            GROUP BY oi2."branchMenuItemId"
+            ORDER BY score DESC
+            LIMIT %s
+            """,
+            [branch_id, cart_item_ids, cart_item_ids, limit],
+        )
+        max_score = max([int(row.get("score") or 1) for row in rows], default=1)
+        return [
+            {
+                "branchMenuItemId": str(row.get("id")),
+                "menuItemId": str(row.get("id")),
+                "name": f"Item {str(row.get('id'))[:6]}",
+                "price": 30000,
+                "score": round((int(row.get("score") or 0) / max_score), 2),
+                "reason": "item_cooccurrence",
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+
+
+def normalize_text_for_sentiment(text: str) -> str:
+    value = str(text or "").lower()
+    value = value.replace("không", "khong").replace("hài lòng", "hailong")
+    value = value.replace("thái độ", "thai_do").replace("hết món", "het_mon")
+    value = value.replace("chờ lâu", "cho_lau").replace("khó phục vụ", "khophucvu")
+    value = re.sub(r"[^a-z0-9À-ỹà-ỹ_\s]", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
+def sentiment_weight_score(tokens: list[str], weight_map: dict[str, float]) -> float:
+    score = 0.0
+    for token in tokens:
+        score += weight_map.get(token, 0.0)
+    return score
+
+
+def classify_sentiment(text: str) -> tuple[str, float, dict[str, float], dict[str, Any]]:
+    normalized_text = normalize_text_for_sentiment(text)
+    tokens = [token for token in normalized_text.split(" ") if token]
+
+    pos_score = sentiment_weight_score(tokens, POSITIVE_WORD_WEIGHTS)
+    neg_score = sentiment_weight_score(tokens, NEGATIVE_WORD_WEIGHTS)
+    delta = pos_score - neg_score
+
+    if delta > 0.35:
+        label = "POSITIVE"
+    elif delta < -0.35:
+        label = "NEGATIVE"
+    else:
+        label = "NEUTRAL"
+
+    magnitude = abs(delta)
+    confidence = max(0.55, min(0.97, 0.6 + (magnitude * 0.12)))
+
+    base_positive = max(0.05, pos_score + (0.8 if label == "POSITIVE" else 0.2))
+    base_negative = max(0.05, neg_score + (0.8 if label == "NEGATIVE" else 0.2))
+    base_neutral = max(0.1, 0.8 if label == "NEUTRAL" else 0.25)
+    total = base_positive + base_neutral + base_negative
+    normalized = {
+        "POSITIVE": round(base_positive / total, 2),
+        "NEUTRAL": round(base_neutral / total, 2),
+        "NEGATIVE": round(base_negative / total, 2),
+    }
+    explanation = {
+        "tokens": tokens[:20],
+        "positiveScore": round(pos_score, 3),
+        "negativeScore": round(neg_score, 3),
+        "delta": round(delta, 3),
+    }
+    return label, round(confidence, 2), normalized, explanation
+
+
+def classify_sentiment_with_gemini(text: str) -> tuple[str, float, dict[str, float], dict[str, Any]]:
+    if not AI_SENTIMENT_GEMINI_API_KEY:
+        raise RuntimeError("gemini_api_key_missing")
+    endpoint = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{AI_SENTIMENT_GEMINI_MODEL}:generateContent?key={AI_SENTIMENT_GEMINI_API_KEY}"
+    )
+    prompt = (
+        "Analyze Vietnamese coffee-shop feedback sentiment.\n"
+        "Return JSON only: {\"label\":\"POSITIVE|NEUTRAL|NEGATIVE\",\"confidence\":0..1,"
+        "\"scores\":{\"positive\":0..1,\"neutral\":0..1,\"negative\":0..1}}.\n"
+        f"Text: {text}"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"},
+    }
+    req = urlrequest.Request(
+        endpoint,
+        data=json_dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    timeout_sec = max(0.5, AI_SENTIMENT_GEMINI_TIMEOUT_MS / 1000.0)
+    with urlrequest.urlopen(req, timeout=timeout_sec) as response:  # nosec B310
+        body = response.read().decode("utf-8", errors="ignore")
+    import json
+
+    parsed = json.loads(body)
+    text_out = parsed.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "{}")
+    model_json = json.loads(str(text_out or "{}"))
+    label = str(model_json.get("label") or "NEUTRAL").upper().strip()
+    if label not in {"POSITIVE", "NEUTRAL", "NEGATIVE"}:
+        label = "NEUTRAL"
+    confidence = max(0.0, min(float(model_json.get("confidence") or 0.5), 1.0))
+    scores_raw = model_json.get("scores") or {}
+    positive = max(0.0, float(scores_raw.get("positive") or 0.0))
+    neutral = max(0.0, float(scores_raw.get("neutral") or 0.0))
+    negative = max(0.0, float(scores_raw.get("negative") or 0.0))
+    total = positive + neutral + negative
+    if total <= 0:
+        normalized = {"POSITIVE": 0.0, "NEUTRAL": 1.0, "NEGATIVE": 0.0}
+    else:
+        normalized = {
+            "POSITIVE": round(positive / total, 2),
+            "NEUTRAL": round(neutral / total, 2),
+            "NEGATIVE": round(negative / total, 2),
+        }
+    explanation = {"provider": "gemini", "model": AI_SENTIMENT_GEMINI_MODEL}
+    return label, round(confidence, 2), normalized, explanation
+
+
+def record_sentiment_telemetry(source: str, success: bool, confidence: float | None = None, error: str | None = None) -> None:
+    source_key = "gemini" if str(source).lower() == "gemini" else "fallback"
+    SENTIMENT_TELEMETRY["totals"]["requests"] = int(SENTIMENT_TELEMETRY["totals"].get("requests", 0)) + 1
+    if source_key == "gemini" and success:
+        SENTIMENT_TELEMETRY["totals"]["geminiSuccess"] = int(SENTIMENT_TELEMETRY["totals"].get("geminiSuccess", 0)) + 1
+    elif source_key == "gemini":
+        SENTIMENT_TELEMETRY["totals"]["geminiError"] = int(SENTIMENT_TELEMETRY["totals"].get("geminiError", 0)) + 1
+    else:
+        SENTIMENT_TELEMETRY["totals"]["fallbackLexicon"] = int(SENTIMENT_TELEMETRY["totals"].get("fallbackLexicon", 0)) + 1
+    if isinstance(confidence, float):
+        SENTIMENT_TELEMETRY["confidenceSum"][source_key] = float(SENTIMENT_TELEMETRY["confidenceSum"].get(source_key, 0.0)) + confidence
+        SENTIMENT_TELEMETRY["confidenceCount"][source_key] = int(SENTIMENT_TELEMETRY["confidenceCount"].get(source_key, 0)) + 1
+    if error:
+        SENTIMENT_TELEMETRY["lastError"] = str(error)[:240]
+    SENTIMENT_TELEMETRY["lastUpdatedAt"] = datetime.now(timezone.utc).isoformat()
+    SENTIMENT_SOURCE_COUNT.labels(source=source_key, status="success" if success else "error").inc()
+
+
+def sentiment_model_quality_snapshot(branch_id: str | None = None) -> dict[str, Any]:
+    safe_lookback = max(1, min(AI_SENTIMENT_QUALITY_LOOKBACK_HOURS, 24 * 14))
+    if REPORT_DATABASE_URL:
+        try:
+            where_branch = 'AND "branchId" = %s' if branch_id else ""
+            params: list[Any] = [safe_lookback]
+            if branch_id:
+                params.append(branch_id)
+            rows = execute_sql(
+                f"""
+                SELECT reason, COUNT(*)::int AS count, AVG(confidence)::float AS avg_confidence
+                FROM sentiment_analysis
+                WHERE "analyzedAt" >= (NOW() - (%s::int || ' hours')::interval)
+                  {where_branch}
+                GROUP BY reason
+                """,
+                params,
+            )
+            totals = {"requests": 0, "geminiSuccess": 0, "geminiError": 0, "fallbackLexicon": 0}
+            gemini_avg = 0.0
+            fallback_avg = 0.0
+            for row in rows:
+                reason = str(row.get("reason") or "").lower()
+                count = int(row.get("count") or 0)
+                avg_conf = float(row.get("avg_confidence") or 0.0)
+                totals["requests"] += count
+                if "gemini" in reason:
+                    totals["geminiSuccess"] += count
+                    gemini_avg = avg_conf
+                elif "fallback" in reason or "lexicon" in reason:
+                    totals["fallbackLexicon"] += count
+                    fallback_avg = avg_conf
+            requests = max(1, totals["requests"])
+            return {
+                "provider": "gemini+fallback-lexicon",
+                "geminiEnabled": bool(AI_SENTIMENT_GEMINI_API_KEY),
+                "geminiModel": AI_SENTIMENT_GEMINI_MODEL,
+                "lookbackHours": safe_lookback,
+                "source": "db",
+                "totals": totals,
+                "ratios": {
+                    "geminiSuccessRatio": round(totals["geminiSuccess"] / requests, 4),
+                    "geminiErrorRatio": 0.0,
+                    "fallbackRatio": round(totals["fallbackLexicon"] / requests, 4),
+                },
+                "avgConfidence": {
+                    "gemini": round(gemini_avg, 4),
+                    "fallback": round(fallback_avg, 4),
+                },
+                "lastError": SENTIMENT_TELEMETRY.get("lastError"),
+                "lastUpdatedAt": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception:
+            pass
+
+    totals = SENTIMENT_TELEMETRY.get("totals", {})
+    requests = max(1, int(totals.get("requests", 0)))
+    gemini_success = int(totals.get("geminiSuccess", 0))
+    gemini_error = int(totals.get("geminiError", 0))
+    fallback = int(totals.get("fallbackLexicon", 0))
+    confidence_sum = SENTIMENT_TELEMETRY.get("confidenceSum", {})
+    confidence_count = SENTIMENT_TELEMETRY.get("confidenceCount", {})
+    gemini_avg_conf = float(confidence_sum.get("gemini", 0.0)) / max(1, int(confidence_count.get("gemini", 0)))
+    fallback_avg_conf = float(confidence_sum.get("fallback", 0.0)) / max(1, int(confidence_count.get("fallback", 0)))
+    return {
+        "provider": "gemini+fallback-lexicon",
+        "geminiEnabled": bool(AI_SENTIMENT_GEMINI_API_KEY),
+        "geminiModel": AI_SENTIMENT_GEMINI_MODEL,
+        "lookbackHours": safe_lookback,
+        "source": "memory",
+        "totals": totals,
+        "ratios": {
+            "geminiSuccessRatio": round(gemini_success / requests, 4),
+            "geminiErrorRatio": round(gemini_error / requests, 4),
+            "fallbackRatio": round(fallback / requests, 4),
+        },
+        "avgConfidence": {
+            "gemini": round(gemini_avg_conf, 4),
+            "fallback": round(fallback_avg_conf, 4),
+        },
+        "lastError": SENTIMENT_TELEMETRY.get("lastError"),
+        "lastUpdatedAt": SENTIMENT_TELEMETRY.get("lastUpdatedAt"),
+    }
+
+
+def decimal_from_any(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    mid = len(sorted_values) // 2
+    if len(sorted_values) % 2 == 0:
+        return (sorted_values[mid - 1] + sorted_values[mid]) / 2
+    return sorted_values[mid]
+
+
+def std_dev(values: list[float], mean_value: float) -> float:
+    if len(values) <= 1:
+        return 0.0
+    variance = sum((value - mean_value) ** 2 for value in values) / len(values)
+    return variance ** 0.5
+
+
+def historical_daily_revenue(branch_id: str, lookback_days: int = 90) -> list[dict[str, Any]]:
+    if not REPORT_DATABASE_URL:
+        return []
+    try:
+        rows = execute_sql(
+            """
+            SELECT DATE(o."createdAt") AS date, COALESCE(SUM(o."finalAmount"), 0) AS revenue
+            FROM order_entity o
+            WHERE o."branchId" = %s
+              AND COALESCE(o."paymentStatus", 'UNPAID') = 'PAID'
+              AND o."createdAt" >= (CURRENT_DATE - (%s::int || ' days')::interval)
+            GROUP BY DATE(o."createdAt")
+            ORDER BY DATE(o."createdAt") ASC
+            """,
+            [branch_id, max(7, min(lookback_days, 365))],
+        )
+        return rows
+    except Exception:
+        return []
+
+
+def merge_recommendation_candidates(
+    cooccurrence_items: list[dict[str, Any]],
+    popular_items: list[dict[str, Any]],
+    cart_item_ids: list[str],
+    limit: int,
+) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(limit, 10))
+    cart_set = set([str(item_id).strip() for item_id in cart_item_ids if str(item_id).strip()])
+    score_map: dict[str, dict[str, Any]] = {}
+
+    for idx, item in enumerate(cooccurrence_items):
+        item_id = str(item.get("branchMenuItemId") or item.get("menuItemId") or "").strip()
+        if not item_id or item_id in cart_set:
+            continue
+        co_score = decimal_from_any(item.get("score"), 0.0)
+        weighted = (0.72 * co_score) + max(0.0, 0.28 - idx * 0.03)
+        score_map[item_id] = {**item, "score": round(min(0.99, weighted), 4), "reason": "hybrid_cf_popularity"}
+
+    for idx, item in enumerate(popular_items):
+        item_id = str(item.get("branchMenuItemId") or item.get("menuItemId") or "").strip()
+        if not item_id or item_id in cart_set:
+            continue
+        pop_score = decimal_from_any(item.get("score"), 0.0)
+        weighted = (0.40 * pop_score) + max(0.0, 0.60 - idx * 0.04)
+        if item_id in score_map:
+            score_map[item_id]["score"] = round(min(0.99, score_map[item_id]["score"] + (weighted * 0.25)), 4)
+            continue
+        score_map[item_id] = {**item, "score": round(min(0.99, weighted), 4), "reason": "popularity_fallback"}
+
+    ranked = sorted(score_map.values(), key=lambda row: decimal_from_any(row.get("score"), 0), reverse=True)
+
+    # Diversify: avoid returning only one reason/type when list is long.
+    if len(ranked) > 3:
+        first = ranked[0]
+        others = [row for row in ranked[1:] if str(row.get("reason")) != str(first.get("reason"))]
+        if others:
+            ranked = [first, others[0]] + [row for row in ranked[1:] if row is not others[0]]
+
+    return ranked[:safe_limit]
+
+
+def build_revenue_forecast_from_history(branch_id: str, days: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    now = datetime.now(timezone.utc)
+    history = historical_daily_revenue(branch_id, 120)
+    if not history:
+        baseline = 4_200_000.0
+        points = []
+        for idx in range(days):
+            predicted = baseline * (1 + (0.015 * ((idx % 7) - 3)))
+            points.append(
+                {
+                    "date": (now + timedelta(days=idx)).date().isoformat(),
+                    "predictedRevenue": int(max(0.0, predicted)),
+                    "confidenceLow": int(max(0.0, predicted * 0.86)),
+                    "confidenceHigh": int(max(0.0, predicted * 1.14)),
+                    "confidence": 0.75,
+                }
+            )
+        return points, {"source": "fallback", "historyDays": 0, "baseline": baseline}
+
+    series: list[tuple[datetime.date, float]] = []
+    for row in history:
+        date_raw = str(row.get("date") or "")[:10]
+        try:
+            date_value = datetime.fromisoformat(date_raw).date()
+        except Exception:
+            continue
+        revenue_value = max(0.0, decimal_from_any(row.get("revenue"), 0))
+        series.append((date_value, revenue_value))
+    if not series:
+        baseline = 4_200_000.0
+        points = []
+        for idx in range(days):
+            predicted = baseline * (1 + (0.015 * ((idx % 7) - 3)))
+            points.append(
+                {
+                    "date": (now + timedelta(days=idx)).date().isoformat(),
+                    "predictedRevenue": int(max(0.0, predicted)),
+                    "confidenceLow": int(max(0.0, predicted * 0.86)),
+                    "confidenceHigh": int(max(0.0, predicted * 1.14)),
+                    "confidence": 0.75,
+                }
+            )
+        return points, {"source": "fallback", "historyDays": 0, "baseline": baseline}
+
+    values = [value for _, value in series]
+    mean_value = sum(values) / len(values)
+    day_factors = {idx: [] for idx in range(7)}
+    for day, value in series:
+        day_factors[day.weekday()].append(value)
+    weekday_factor: dict[int, float] = {}
+    for weekday in range(7):
+        weekday_avg = sum(day_factors[weekday]) / len(day_factors[weekday]) if day_factors[weekday] else mean_value
+        weekday_factor[weekday] = weekday_avg / max(mean_value, 1.0)
+
+    trend_window = min(14, len(values))
+    recent_avg = sum(values[-trend_window:]) / trend_window
+    past_avg = sum(values[-(trend_window * 2):-trend_window]) / trend_window if len(values) >= trend_window * 2 else mean_value
+    trend_ratio = recent_avg / max(past_avg, 1.0)
+    trend_ratio = max(0.85, min(1.2, trend_ratio))
+
+    mape_proxy = min(25.0, max(5.0, abs(trend_ratio - 1.0) * 100 + 7.5))
+    confidence_band = max(0.08, min(0.2, mape_proxy / 100))
+    confidence_score = round(max(0.65, min(0.9, 1 - (mape_proxy / 100))), 2)
+
+    points: list[dict[str, Any]] = []
+    for idx in range(days):
+        forecast_date = (now + timedelta(days=idx)).date()
+        seasonal = weekday_factor.get(forecast_date.weekday(), 1.0)
+        step_trend = 1 + ((trend_ratio - 1) * min(1.0, idx / max(1, days - 1)))
+        predicted = max(0.0, mean_value * seasonal * step_trend)
+        points.append(
+            {
+                "date": forecast_date.isoformat(),
+                "predictedRevenue": int(predicted),
+                "confidenceLow": int(max(0.0, predicted * (1 - confidence_band))),
+                "confidenceHigh": int(max(0.0, predicted * (1 + confidence_band))),
+                "confidence": confidence_score,
+            }
+        )
+
+    metadata = {
+        "source": "history-derived",
+        "historyDays": len(series),
+        "meanDailyRevenue": int(mean_value),
+        "trendRatio": round(trend_ratio, 4),
+        "mapeProxy": round(mape_proxy, 2),
+    }
+    return points, metadata
+
+
+def top_negative_issues(texts: list[str], limit: int = 3) -> list[dict[str, Any]]:
+    topic_counts: dict[str, int] = {key: 0 for key in ISSUE_TOPIC_KEYWORDS.keys()}
+    fallback_token_counts: dict[str, int] = {}
+    stop_words = {
+        "la", "va", "cho", "khong", "qua", "rat", "bi", "toi", "ban", "quan",
+        "phuc", "vu", "mon", "nhan", "vien", "khach", "nay", "kia", "roi",
+    }
+    for text in texts:
+        normalized = normalize_text_for_sentiment(text)
+        tokens = [token.strip() for token in normalized.split() if token.strip()]
+        token_set = set(tokens)
+        matched_topic = False
+        for topic, keywords in ISSUE_TOPIC_KEYWORDS.items():
+            if token_set.intersection(keywords):
+                topic_counts[topic] += 1
+                matched_topic = True
+        if not matched_topic:
+            for token in tokens:
+                if len(token) < 3 or token in stop_words:
+                    continue
+                fallback_token_counts[token] = fallback_token_counts.get(token, 0) + 1
+    ranked_topics = sorted(
+        [(topic, count) for topic, count in topic_counts.items() if count > 0],
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    issues = [{"issue": topic, "count": count} for topic, count in ranked_topics]
+    if len(issues) < limit and fallback_token_counts:
+        fallback_ranked = sorted(fallback_token_counts.items(), key=lambda item: item[1], reverse=True)
+        for token, count in fallback_ranked:
+            if len(issues) >= limit:
+                break
+            issues.append({"issue": token, "count": count})
+    return issues[: max(1, min(limit, 10))]
+
+
+async def forecast_cron_loop():
+    if not AI_FORECAST_CRON_ENABLED:
+        return
+    FORECAST_CRON_STATE["running"] = True
+    while True:
+        now = datetime.now(timezone.utc)
+        if now.hour == AI_FORECAST_CRON_HOUR_UTC and now.minute < 5:
+            try:
+                branch_rows = execute_sql('SELECT DISTINCT "branchId" FROM sales_forecast WHERE "branchId" IS NOT NULL LIMIT 200')
+                branch_ids = [str(row.get("branchId") or "").strip() for row in branch_rows if str(row.get("branchId") or "").strip()]
+                if not branch_ids:
+                    branch_ids = ["branch-e2e"]
+                for branch_id in branch_ids:
+                    rebuild_revenue_forecast_internal(ForecastRebuildPayload(branchId=branch_id, days=7, granularity="daily"))
+                FORECAST_CRON_STATE["lastRunAt"] = datetime.now(timezone.utc).isoformat()
+                await asyncio.sleep(360)
+            except Exception:
+                await asyncio.sleep(60)
+        else:
+            await asyncio.sleep(30)
+
+
+@app.on_event("startup")
+async def startup_tasks():
+    reload_knowledge_base(source="startup")
+    init_recommend_ab_event_store()
+    if AI_FORECAST_CRON_ENABLED:
+        asyncio.create_task(forecast_cron_loop())
+
+
+def map_question_to_sql(question: str, branch_id: str | None) -> str:
+    q = question.lower()
+    where = 'WHERE "branchId" = %s' if branch_id else ""
+
+    if "doanh thu" in q and ("hôm nay" in q or "hom nay" in q):
+        return (
+            f'SELECT COALESCE(SUM("predictedRevenue"), 0) AS revenue FROM sales_forecast {where} '
+            f'{"AND" if where else "WHERE"} "forecastDate"::date = CURRENT_DATE'
+        )
+    if "món" in q and ("bán chạy" in q or "ban chay" in q):
+        return f'SELECT "menuItemId", SUM(quantity)::int AS qty FROM item_sales {where} GROUP BY "menuItemId" ORDER BY qty DESC LIMIT 10'
+    if "bất thường" in q or "canh bao" in q or "cảnh báo" in q:
+        return f'SELECT id, "alertType", severity, description, "isResolved", "detectedAt" FROM anomaly_alert {where} ORDER BY "detectedAt" DESC LIMIT 20'
+    if "cảm xúc" in q or "cam xuc" in q or "sentiment" in q:
+        return f'SELECT label, COUNT(*)::int AS count FROM sentiment_analysis {where} GROUP BY label ORDER BY label'
+
+    return f'SELECT "forecastDate", "predictedRevenue", "confidenceLow", "confidenceHigh" FROM sales_forecast {where} ORDER BY "forecastDate" DESC LIMIT 7'
+
+
+def infer_report_intent(question: str) -> str:
+    q = question.lower()
+    if "doanh thu" in q:
+        return "REVENUE_QUERY"
+    if "món" in q and ("bán chạy" in q or "ban chay" in q):
+        return "TOP_ITEMS_QUERY"
+    if "bất thường" in q or "cảnh báo" in q or "canh bao" in q:
+        return "ANOMALY_QUERY"
+    if "cảm xúc" in q or "sentiment" in q or "cam xuc" in q:
+        return "SENTIMENT_QUERY"
+    return "GENERAL_QUERY"
+
+
+def summarize_sql_result(intent: str, rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "Không tìm thấy dữ liệu phù hợp trong phạm vi câu hỏi."
+    if intent == "REVENUE_QUERY":
+        revenue = decimal_from_any(rows[0].get("revenue"), 0)
+        return f"Doanh thu ước tính theo dữ liệu hiện có là {int(revenue):,}đ."
+    if intent == "TOP_ITEMS_QUERY":
+        top = rows[0]
+        return f"Món dẫn đầu hiện tại là {top.get('menuItemId', 'N/A')} với số lượng {top.get('qty', 0)}."
+    if intent == "ANOMALY_QUERY":
+        return f"Có {len(rows)} cảnh báo bất thường gần nhất trong phạm vi truy vấn."
+    if intent == "SENTIMENT_QUERY":
+        parts = [f"{row.get('label', 'UNKNOWN')}: {row.get('count', 0)}" for row in rows[:3]]
+        return "Phân bổ cảm xúc hiện tại: " + ", ".join(parts)
+    return f"Tìm thấy {len(rows)} dòng dữ liệu."
+
+
+def answer_from_knowledge_base(question: str) -> tuple[str, str, float, bool]:
+    lowered = question.lower()
+    for item in DEFAULT_MENU_KB:
+        if item["keyword"] in lowered:
+            return item["answer"], "FAQ", 0.91, False
+
+    order_tokens = ["đặt", "order", "mua", "thêm vào giỏ"]
+    if any(token in lowered for token in order_tokens):
+        return "Mình đã ghi nhận yêu cầu đặt món. Nhân viên sẽ xác nhận lại ngay.", "ORDER", 0.74, False
+
+    return "Mình chưa chắc câu trả lời. Mình sẽ chuyển yêu cầu này cho nhân viên để hỗ trợ ngay.", "ESCALATE", 0.41, True
+
+
+def load_anomalies_from_db(branch_id: str, severity: str | None) -> list[dict[str, Any]]:
+    if not REPORT_DATABASE_URL:
+        return []
+    try:
+        sql = (
+            'SELECT id, "alertType", severity, description, "isResolved", "detectedAt" '
+            'FROM anomaly_alert WHERE "branchId" = %s '
+        )
+        params: list[Any] = [branch_id]
+        if severity:
+            sql += "AND severity = %s "
+            params.append(severity.upper())
+        sql += 'ORDER BY "detectedAt" DESC LIMIT 50'
+        return execute_sql(sql, params)
+    except Exception:
+        return []
+
+
+def run_data_quality_checks(branch_id: str | None = None) -> dict[str, Any]:
+    if not REPORT_DATABASE_URL:
+        return {
+            "status": "degraded",
+            "source": "fallback",
+            "checks": [
+                {"name": "database_configured", "ok": False, "detail": "REPORT_DATABASE_URL is not configured"},
+            ],
+        }
+
+    checks: list[dict[str, Any]] = []
+    scoped_branch = str(branch_id or "").strip()
+    where_branch = 'WHERE "branchId" = %s' if scoped_branch else ""
+    params = [scoped_branch] if scoped_branch else []
+
+    try:
+        total_forecast = execute_sql(
+            f'SELECT COUNT(*)::int AS count FROM sales_forecast {where_branch}',
+            params,
+        )[0]["count"]
+        checks.append({"name": "sales_forecast_has_rows", "ok": int(total_forecast) > 0, "detail": {"count": int(total_forecast)}})
+
+        negative_rows = execute_sql(
+            f'SELECT COUNT(*)::int AS count FROM sales_forecast {where_branch} {"AND" if where_branch else "WHERE"} "predictedRevenue" < 0',
+            params,
+        )[0]["count"]
+        checks.append({"name": "sales_forecast_no_negative", "ok": int(negative_rows) == 0, "detail": {"negativeCount": int(negative_rows)}})
+
+        recent_days = execute_sql(
+            f"""
+            SELECT COUNT(DISTINCT DATE("forecastDate"))::int AS days
+            FROM sales_forecast
+            {where_branch}
+              {"AND" if where_branch else "WHERE"} "forecastDate" >= (CURRENT_DATE - INTERVAL '7 days')
+            """,
+            params,
+        )[0]["days"]
+        checks.append({"name": "sales_forecast_recent_coverage", "ok": int(recent_days) >= 3, "detail": {"distinctDays": int(recent_days)}})
+
+        sentiment_total = execute_sql(
+            f'SELECT COUNT(*)::int AS count FROM sentiment_analysis {where_branch}',
+            params,
+        )[0]["count"]
+        checks.append({"name": "sentiment_has_rows", "ok": int(sentiment_total) > 0, "detail": {"count": int(sentiment_total)}})
+
+        anomaly_open = execute_sql(
+            f'SELECT COUNT(*)::int AS count FROM anomaly_alert {where_branch} {"AND" if where_branch else "WHERE"} COALESCE("isResolved", false) = false',
+            params,
+        )[0]["count"]
+        checks.append({"name": "anomaly_open_count_observed", "ok": True, "detail": {"openCount": int(anomaly_open)}})
+    except Exception as error:
+        checks.append({"name": "query_execution", "ok": False, "detail": str(error)})
+
+    overall_ok = all(bool(item.get("ok")) for item in checks if item.get("name") != "anomaly_open_count_observed")
+    return {"status": "ok" if overall_ok else "degraded", "source": "db", "checks": checks}
+
+
+def run_retention_cleanup(payload: RetentionRunPayload) -> dict[str, Any]:
+    if not REPORT_DATABASE_URL:
+        return {"success": False, "reason": "REPORT_DATABASE_URL is not configured", "deleted": {}}
+
+    forecast_days = max(30, min(payload.salesForecastDays, 720))
+    anomaly_days = max(30, min(payload.anomalyDays, 1460))
+    chatbot_days = max(30, min(payload.chatbotLogDays, 365))
+
+    deleted = {"salesForecast": 0, "anomalyAlert": 0, "chatbotQueryLog": 0}
+    try:
+        with psycopg.connect(REPORT_DATABASE_URL, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    'DELETE FROM sales_forecast WHERE "generatedAt" < (NOW() - (%s::int || \' days\')::interval)',
+                    (forecast_days,),
+                )
+                deleted["salesForecast"] = int(cur.rowcount or 0)
+
+                cur.execute(
+                    'DELETE FROM anomaly_alert WHERE "detectedAt" < (NOW() - (%s::int || \' days\')::interval)',
+                    (anomaly_days,),
+                )
+                deleted["anomalyAlert"] = int(cur.rowcount or 0)
+
+                cur.execute(
+                    'DELETE FROM chatbot_query_log WHERE "createdAt" < (NOW() - (%s::int || \' days\')::interval)',
+                    (chatbot_days,),
+                )
+                deleted["chatbotQueryLog"] = int(cur.rowcount or 0)
+    except Exception as error:
+        return {"success": False, "reason": str(error), "deleted": deleted}
+
+    return {"success": True, "deleted": deleted, "retentionDays": {"salesForecast": forecast_days, "anomalyAlert": anomaly_days, "chatbotQueryLog": chatbot_days}}
+
+
+def calculate_anomaly_severity(z_score: float) -> str:
+    abs_score = abs(z_score)
+    if abs_score >= 4:
+        return "CRITICAL"
+    if abs_score >= 3:
+        return "HIGH"
+    if abs_score >= 2:
+        return "MEDIUM"
+    return "LOW"
+
+
+def emit_staff_notification(payload: dict[str, Any]) -> bool:
+    target = f"{CHAT_SERVICE_API_URL}/staff-notifications"
+    try:
+        body = json_dumps(payload).encode("utf-8")
+        req = urlrequest.Request(target, data=body, method="POST", headers={"Content-Type": "application/json"})
+        with urlrequest.urlopen(req, timeout=2.0) as response:  # nosec B310
+            return int(getattr(response, "status", 500)) < 300
+    except Exception:
+        return False
+
+
+@app.get("/metrics")
+def metrics():
+    return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/api/ai/health")
+@metric_guard("health")
+def health() -> dict[str, Any]:
+    DATA_FRESHNESS_MINUTES.set(5)
+    PREDICTION_ERROR_GAUGE.set(12.5)
+    return {
+        "status": "ok",
+        "service": "ai-service",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "activeModel": AI_ACTIVE_MODEL_VERSION,
+        "stagingModel": AI_STAGING_MODEL_VERSION,
+        "rolloutPercent": AI_ROLLOUT_PERCENT,
+        "kb": {
+            "lastReloadAt": KB_STATE.get("lastReloadAt"),
+            "refreshIntervalMinutes": KB_REFRESH_INTERVAL_MINUTES,
+            "itemCount": KB_STATE.get("itemCount", len(DEFAULT_MENU_KB)),
+        },
+        "forecastCron": {
+            "enabled": AI_FORECAST_CRON_ENABLED,
+            "hourUtc": AI_FORECAST_CRON_HOUR_UTC,
+            "lastRunAt": FORECAST_CRON_STATE.get("lastRunAt"),
+        },
+    }
+
+
+@app.get("/api/ai/live")
+def live() -> dict[str, Any]:
+    return {"status": "alive", "service": "ai-service", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/ai/ready")
+def ready() -> dict[str, Any]:
+    db_ok = True
+    db_reason = "not-configured"
+    if REPORT_DATABASE_URL:
+        try:
+            with psycopg.connect(REPORT_DATABASE_URL) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SET LOCAL statement_timeout = '1000ms'")
+                    cur.execute("SELECT 1")
+            db_reason = "ok"
+        except Exception as error:
+            db_ok = False
+            db_reason = f"error:{error.__class__.__name__}"
+
+    kb_ok = int(KB_STATE.get("itemCount", len(DEFAULT_MENU_KB))) > 0
+    status = "ready" if db_ok and kb_ok else "degraded"
+    return {
+        "status": status,
+        "service": "ai-service",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "checks": {
+            "database": {"ok": db_ok, "reason": db_reason},
+            "knowledgeBase": {"ok": kb_ok, "itemCount": int(KB_STATE.get("itemCount", len(DEFAULT_MENU_KB)))},
+            "rbac": {"enforce": AI_ENFORCE_RBAC, "allowLegacyNoAuth": AI_ALLOW_LEGACY_NO_AUTH},
+        },
+    }
+
+
+@app.get("/api/ai/ops/data-quality")
+def ai_ops_data_quality(request: Request, branchId: str | None = None) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    result = run_data_quality_checks(branchId)
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "branchId": branchId,
+        **result,
+    }
+
+
+@app.get("/api/ai/ops/quality-summary")
+def ai_ops_quality_summary(request: Request, branchId: str | None = None) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    quality = run_data_quality_checks(branchId)
+    fallback_by_endpoint = build_fallback_ratio_snapshot()
+    critical_ratio = {
+        endpoint: data
+        for endpoint, data in fallback_by_endpoint.items()
+        if data.get("fallbackRatio", 0) >= 0.2
+    }
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "branchId": branchId,
+        "quality": quality,
+        "modelQuality": {"sentiment": sentiment_model_quality_snapshot(branchId)},
+        "fallbackRatios": fallback_by_endpoint,
+        "attention": {
+            "highFallbackEndpoints": critical_ratio,
+            "count": len(critical_ratio),
+        },
+    }
+
+
+@app.get("/api/ai/ops/model-quality")
+def ai_ops_model_quality(request: Request, branchId: str | None = None) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "branchId": branchId,
+        "sentiment": sentiment_model_quality_snapshot(branchId),
+    }
+
+
+@app.get("/api/ai/ops/fallback-trend")
+def ai_ops_fallback_trend(
+    request: Request,
+    branchId: str | None = None,
+    endpoint: str | None = None,
+    windowMinutes: int = 60,
+) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    rows = build_fallback_trend_snapshot(windowMinutes, endpoint)
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "branchId": branchId,
+        "windowMinutes": max(5, min(windowMinutes, 24 * 60)),
+        "endpoint": endpoint,
+        "points": rows,
+    }
+
+
+@app.get("/api/ai/ops/fallback-trend-summary")
+def ai_ops_fallback_trend_summary(
+    request: Request,
+    branchId: str | None = None,
+    windowMinutes: int = 120,
+    threshold: float = 0.2,
+) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    safe_threshold = max(0.0, min(threshold, 1.0))
+    rows = build_fallback_trend_summary(window_minutes=windowMinutes, threshold=safe_threshold)
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "branchId": branchId,
+        "windowMinutes": max(5, min(windowMinutes, 24 * 60)),
+        "threshold": safe_threshold,
+        "items": rows,
+    }
+
+
+@app.post("/api/ai/ops/retention/run")
+def ai_ops_retention_run(payload: RetentionRunPayload, request: Request) -> dict[str, Any]:
+    authorize_request(request, None, {"ADMIN"})
+    enforce_rate_limit(request, "retention_run", max(1, AI_RATE_LIMIT_PER_MINUTE // 6))
+    result = run_retention_cleanup(payload)
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        **result,
+    }
+
+
+def rebuild_revenue_forecast_internal(payload: ForecastRebuildPayload) -> dict[str, Any]:
+    payload.branchId = normalize_branch_id(payload.branchId)
+    payload.days = max(1, min(payload.days, 30))
+    generated, forecast_meta = build_revenue_forecast_from_history(payload.branchId, payload.days)
+
+    persisted = 0
+    if REPORT_DATABASE_URL:
+        try:
+            with psycopg.connect(REPORT_DATABASE_URL, autocommit=True) as conn:
+                with conn.cursor() as cur:
+                    for item in generated:
+                        cur.execute(
+                            """
+                            INSERT INTO sales_forecast ("branchId", "forecastDate", granularity, "predictedRevenue", "confidenceLow", "confidenceHigh", confidence, "modelVersion", mape, "generatedAt")
+                            VALUES (%s, %s::date, %s, %s, %s, %s, %s, %s, %s, NOW())
+                            ON CONFLICT ("branchId", "forecastDate", granularity)
+                            DO UPDATE SET
+                              "predictedRevenue" = EXCLUDED."predictedRevenue",
+                              "confidenceLow" = EXCLUDED."confidenceLow",
+                              "confidenceHigh" = EXCLUDED."confidenceHigh",
+                              confidence = EXCLUDED.confidence,
+                              "modelVersion" = EXCLUDED."modelVersion",
+                              mape = EXCLUDED.mape,
+                              "generatedAt" = NOW()
+                            """,
+                            (
+                                payload.branchId,
+                                item["date"],
+                                payload.granularity,
+                                item["predictedRevenue"],
+                                item["confidenceLow"],
+                                item["confidenceHigh"],
+                                item["confidence"],
+                                AI_ACTIVE_MODEL_VERSION,
+                                decimal_from_any(forecast_meta.get("mapeProxy"), 12.5),
+                            ),
+                        )
+                        persisted += 1
+        except Exception:
+            persisted = 0
+
+    log_audit(
+        "/api/ai/forecast/revenue/rebuild",
+        "rebuild",
+        True,
+        payload.branchId,
+        metadata={"days": payload.days, "persisted": persisted, **forecast_meta},
+    )
+    return {
+        "branchId": payload.branchId,
+        "days": payload.days,
+        "granularity": payload.granularity,
+        "persisted": persisted,
+        "items": generated,
+        "modelVersion": AI_ACTIVE_MODEL_VERSION,
+        "source": str(forecast_meta.get("source") or "fallback"),
+        "meta": forecast_meta,
+    }
+
+
+@app.post("/api/ai/forecast/revenue/rebuild")
+@metric_guard("forecast_revenue_rebuild")
+def rebuild_revenue_forecast(payload: ForecastRebuildPayload, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "forecast_rebuild", AI_RATE_LIMIT_PER_MINUTE)
+    return rebuild_revenue_forecast_internal(payload)
+
+
+@app.post("/api/ai/kb/reload")
+@metric_guard("kb_reload")
+def kb_reload() -> dict[str, Any]:
+    payload = reload_knowledge_base(source="manual-api")
+    return {"success": True, **payload}
+
+
+@app.get("/api/ai/forecast/revenue")
+@metric_guard("forecast_revenue")
+def forecast_revenue(request: Request, branchId: str, days: int = 7, granularity: str = "daily") -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    branchId = normalize_branch_id(branchId)
+    days = max(1, min(days, 30))
+    now = datetime.now(timezone.utc)
+    if REPORT_DATABASE_URL:
+        try:
+            rows = execute_sql(
+                """
+                SELECT "forecastDate", "predictedRevenue", "confidenceLow", "confidenceHigh", confidence
+                FROM sales_forecast
+                WHERE "branchId" = %s AND granularity = %s
+                ORDER BY "forecastDate" ASC
+                LIMIT %s
+                """,
+                [branchId, granularity, days],
+            )
+            if rows:
+                track_response_source("/api/ai/forecast/revenue", "db")
+                forecasts = [
+                    {
+                        "date": str(row.get("forecastDate"))[:10],
+                        "predictedRevenue": int(decimal_from_any(row.get("predictedRevenue"), 0)),
+                        "confidenceLow": int(decimal_from_any(row.get("confidenceLow"), 0)),
+                        "confidenceHigh": int(decimal_from_any(row.get("confidenceHigh"), 0)),
+                        "confidence": decimal_from_any(row.get("confidence"), 0.8),
+                    }
+                    for row in rows
+                ]
+                return {
+                    "branchId": branchId,
+                    "generatedAt": now.isoformat(),
+                    "granularity": granularity,
+                    "forecasts": forecasts,
+                    "modelVersion": AI_ACTIVE_MODEL_VERSION,
+                    "mape": 12.5,
+                    "source": "db",
+                    "available": True,
+                }
+        except Exception:
+            pass
+
+    forecasts, forecast_meta = build_revenue_forecast_from_history(branchId, days)
+    track_response_source("/api/ai/forecast/revenue", str(forecast_meta.get("source") or "fallback"))
+    log_audit("/api/ai/forecast/revenue", "predict", True, branchId)
+    return {
+        "branchId": branchId,
+        "generatedAt": now.isoformat(),
+        "granularity": granularity,
+        "forecasts": forecasts,
+        "modelVersion": AI_ACTIVE_MODEL_VERSION,
+        "mape": decimal_from_any(forecast_meta.get("mapeProxy"), 12.5),
+        "source": str(forecast_meta.get("source") or "fallback"),
+        "available": True,
+        "meta": forecast_meta,
+    }
+
+
+@app.get("/api/ai/forecast/revenue/hourly")
+@metric_guard("forecast_hourly")
+def forecast_revenue_hourly(request: Request, branchId: str) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    points = [{"hour": hour, "predictedRevenue": 120_000 + (hour % 6) * 30_000} for hour in range(24)]
+    log_audit("/api/ai/forecast/revenue/hourly", "predict", True, branchId)
+    return {
+        "branchId": branchId,
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "points": points,
+        "modelVersion": AI_ACTIVE_MODEL_VERSION,
+    }
+
+
+@app.get("/api/ai/forecast/inventory")
+@metric_guard("forecast_inventory")
+def forecast_inventory(request: Request, branchId: str, days: int = 7) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    log_audit("/api/ai/forecast/inventory", "predict", True, branchId)
+    return {
+        "branchId": branchId,
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "items": [
+            {"ingredientId": "milk", "ingredientName": "Milk", "predictedRequired": 18.5, "unit": "L"},
+            {"ingredientId": "coffee_beans", "ingredientName": "Coffee Beans", "predictedRequired": 9.2, "unit": "kg"},
+        ],
+        "horizonDays": max(1, min(days, 30)),
+        "modelVersion": AI_ACTIVE_MODEL_VERSION,
+    }
+
+
+@app.get("/api/ai/forecast/staffing")
+@metric_guard("forecast_staffing")
+def forecast_staffing(request: Request, branchId: str) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    log_audit("/api/ai/forecast/staffing", "predict", True, branchId)
+    return {
+        "branchId": branchId,
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "shifts": [
+            {"period": "morning", "recommendedStaff": 3},
+            {"period": "afternoon", "recommendedStaff": 4},
+            {"period": "evening", "recommendedStaff": 2},
+        ],
+        "modelVersion": AI_ACTIVE_MODEL_VERSION,
+    }
+
+
+@app.get("/api/ai/recommend")
+@metric_guard("recommend")
+def recommend(branchId: str, limit: int = 5, customerId: str | None = None, sessionId: str | None = None) -> dict[str, Any]:
+    branchId = normalize_branch_id(branchId)
+    safe_limit = normalize_limit(limit)
+    experiment_group = assign_recommend_experiment_group(branchId, customerId, sessionId)
+    cart_seed = [customerId] if customerId else []
+    cooccurrence_items = get_cooccurrence_items(branchId, cart_seed, safe_limit) if customerId and experiment_group == "treatment" else []
+    popular_items = get_popular_items(branchId, max(safe_limit * 2, safe_limit))
+    items = merge_recommendation_candidates(cooccurrence_items, popular_items, cart_seed, safe_limit)
+    strategy = "hybrid-cf-popularity" if cooccurrence_items else "popularity"
+    record_recommend_ab_event(
+        branch_id=branchId,
+        group=experiment_group,
+        event="shown",
+        strategy=strategy,
+        customer_id=customerId,
+        session_id=sessionId,
+    )
+    track_response_source("/api/ai/recommend", strategy)
+    log_audit(
+        "/api/ai/recommend",
+        "recommend",
+        True,
+        branchId,
+        metadata={"limit": safe_limit, "strategy": strategy, "experimentGroup": experiment_group},
+    )
+    return {
+        "branchId": branchId,
+        "limit": safe_limit,
+        "items": items,
+        "recommendations": items,
+        "strategy": strategy,
+        "experiment": {"group": experiment_group, "treatmentPercent": max(0, min(AI_RECOMMEND_AB_TREATMENT_PERCENT, 100))},
+        "modelVersion": AI_ACTIVE_MODEL_VERSION,
+    }
+
+
+@app.post("/api/ai/recommend")
+@metric_guard("recommend_post")
+def recommend_post(payload: RecommendationPayload) -> dict[str, Any]:
+    payload.branchId = normalize_branch_id(payload.branchId)
+    safe_limit = normalize_limit(payload.limit)
+    experiment_group = assign_recommend_experiment_group(payload.branchId, payload.customerId, None)
+    cooccurrence_items = (
+        get_cooccurrence_items(payload.branchId, payload.cartItemIds, max(safe_limit * 2, safe_limit))
+        if experiment_group == "treatment"
+        else []
+    )
+    popular_items = get_popular_items(payload.branchId, max(safe_limit * 2, safe_limit))
+    response_items = merge_recommendation_candidates(cooccurrence_items, popular_items, payload.cartItemIds, safe_limit)
+    strategy = "item-based-cf+popularity" if cooccurrence_items else "popularity"
+    record_recommend_ab_event(
+        branch_id=payload.branchId,
+        group=experiment_group,
+        event="shown",
+        strategy=strategy,
+        customer_id=payload.customerId,
+        session_id=None,
+    )
+    track_response_source("/api/ai/recommend_post", strategy)
+    log_audit(
+        "/api/ai/recommend",
+        "recommend",
+        True,
+        payload.branchId,
+        metadata={"limit": safe_limit, "strategy": strategy, "experimentGroup": experiment_group},
+    )
+    return {
+        "branchId": payload.branchId,
+        "limit": safe_limit,
+        "cartItemIds": payload.cartItemIds,
+        "recommendations": response_items,
+        "items": response_items,
+        "strategy": strategy,
+        "experiment": {"group": experiment_group, "treatmentPercent": max(0, min(AI_RECOMMEND_AB_TREATMENT_PERCENT, 100))},
+        "modelVersion": AI_ACTIVE_MODEL_VERSION,
+    }
+
+
+@app.get("/api/ai/recommend/popular")
+@metric_guard("recommend_popular")
+def recommend_popular(branchId: str, limit: int = 5) -> dict[str, Any]:
+    branchId = normalize_branch_id(branchId)
+    safe_limit = normalize_limit(limit)
+    items = get_popular_items(branchId, safe_limit)
+    track_response_source("/api/ai/recommend/popular", "popularity")
+    log_audit("/api/ai/recommend/popular", "recommend", True, branchId, metadata={"limit": safe_limit})
+    return {"branchId": branchId, "items": items, "strategy": "popularity"}
+
+
+@app.post("/api/ai/recommend/feedback")
+@metric_guard("recommend_feedback")
+def recommend_feedback(payload: RecommendationFeedback) -> dict[str, Any]:
+    payload.branchId = normalize_branch_id(payload.branchId)
+    event = str(payload.event or payload.action or "click").strip().lower()
+    if event not in {"shown", "click", "add_to_cart", "purchase"}:
+        event = "click"
+    group = str(payload.experimentGroup or assign_recommend_experiment_group(payload.branchId, payload.customerId, payload.sessionId)).strip().lower()
+    if group not in {"control", "treatment"}:
+        group = "control"
+    record_recommend_ab_event(
+        branch_id=payload.branchId,
+        group=group,
+        event=event,
+        strategy=None,
+        customer_id=payload.customerId,
+        session_id=payload.sessionId,
+    )
+    log_audit(
+        "/api/ai/recommend/feedback",
+        "feedback",
+        True,
+        payload.branchId,
+        metadata={"action": payload.action, "event": event, "experimentGroup": group},
+    )
+    return {
+        "accepted": True,
+        "branchId": payload.branchId,
+        "action": payload.action,
+        "event": event,
+        "experimentGroup": group,
+        "recordedAt": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/ai/recommend/ab-summary")
+@metric_guard("recommend_ab_summary")
+def recommend_ab_summary(request: Request, branchId: str, lookbackHours: int = 24) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    branchId = normalize_branch_id(branchId)
+    summary = build_recommend_ab_summary(branchId, lookbackHours)
+    summary["timestamp"] = datetime.now(timezone.utc).isoformat()
+    return summary
+
+
+@app.get("/api/ai/anomalies")
+@metric_guard("anomalies")
+def anomalies(request: Request, branchId: str, severity: str | None = None) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    branchId = normalize_branch_id(branchId)
+    db_items = load_anomalies_from_db(branchId, severity)
+    if db_items:
+        track_response_source("/api/ai/anomalies", "db")
+        return {"branchId": branchId, "items": db_items, "source": "db", "available": True}
+
+    filtered = [a for a in ANOMALIES if a["branchId"] == branchId]
+    if severity:
+        filtered = [a for a in filtered if a["severity"] == severity.upper()]
+    track_response_source("/api/ai/anomalies", "fallback")
+    log_audit("/api/ai/anomalies", "list", True, branchId)
+    return {"branchId": branchId, "items": filtered, "source": "fallback", "available": True}
+
+
+@app.post("/api/ai/anomalies/detect")
+@metric_guard("anomaly_detect")
+def detect_anomaly(payload: AnomalyDetectPayload, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "anomaly_detect", AI_RATE_LIMIT_PER_MINUTE)
+    authorize_request(request, payload.branchId, {"ADMIN", "MANAGER"})
+    payload.branchId = normalize_branch_id(payload.branchId)
+    if payload.baselineStd < 0:
+        raise HTTPException(status_code=400, detail="baselineStd must be >= 0")
+
+    z_score = 0.0 if payload.baselineStd == 0 else (payload.value - payload.baselineMean) / payload.baselineStd
+    robust_scale = max(payload.baselineStd, abs(payload.baselineMean) * 0.15, 1.0)
+    robust_z_score = (payload.value - payload.baselineMean) / robust_scale
+    combined_score = (abs(z_score) * 0.6) + (abs(robust_z_score) * 0.4)
+    severity = calculate_anomaly_severity(combined_score)
+    score = min(1.0, combined_score / 5.0)
+    description = (
+        payload.description
+        or f"{payload.type}: value={payload.value:.2f}, mean={payload.baselineMean:.2f}, std={payload.baselineStd:.2f}, z={z_score:.2f}"
+    )
+    anomaly_id = f"anomaly-{uuid4()}"
+    detected_at = datetime.now(timezone.utc).isoformat()
+
+    created: dict[str, Any] = {
+        "id": anomaly_id,
+        "branchId": payload.branchId,
+        "alertType": payload.type,
+        "severity": severity,
+        "description": description,
+        "anomalyScore": round(score, 4),
+        "referenceId": payload.referenceId,
+        "referenceType": payload.referenceType,
+        "isResolved": False,
+        "detectedAt": detected_at,
+        "explanation": {
+            "value": payload.value,
+            "baselineMean": payload.baselineMean,
+            "baselineStd": payload.baselineStd,
+            "zScore": round(z_score, 4),
+            "robustZScore": round(robust_z_score, 4),
+            "combinedScore": round(combined_score, 4),
+        },
+    }
+
+    persisted = False
+    notified = False
+    if REPORT_DATABASE_URL:
+        try:
+            with psycopg.connect(REPORT_DATABASE_URL, autocommit=True) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO anomaly_alert (id, "branchId", "alertType", severity, "referenceId", "referenceType", description, "anomalyScore", "isResolved", "detectedAt")
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, false, NOW())
+                        """,
+                        (
+                            anomaly_id,
+                            payload.branchId,
+                            payload.type,
+                            severity,
+                            payload.referenceId,
+                            payload.referenceType,
+                            description,
+                            score,
+                        ),
+                    )
+            persisted = True
+        except Exception:
+            persisted = False
+
+    if not persisted:
+        ANOMALIES.append(created)
+
+    if severity in {"HIGH", "CRITICAL"}:
+        notified = emit_staff_notification(
+            {
+                "type": "ANOMALY_ALERT",
+                "title": f"Canh bao bat thuong {severity}",
+                "message": description,
+                "branchId": payload.branchId,
+                "metadata": {
+                    "anomalyId": anomaly_id,
+                    "severity": severity,
+                    "anomalyScore": score,
+                    "zScore": round(z_score, 4),
+                    "robustZScore": round(robust_z_score, 4),
+                    "combinedScore": round(combined_score, 4),
+                    "referenceId": payload.referenceId,
+                    "referenceType": payload.referenceType,
+                },
+            }
+        )
+
+    log_audit(
+        "/api/ai/anomalies/detect",
+        "detect",
+        True,
+        payload.branchId,
+        metadata={
+            "severity": severity,
+            "zScore": round(z_score, 4),
+            "robustZScore": round(robust_z_score, 4),
+            "combinedScore": round(combined_score, 4),
+            "persisted": persisted,
+            "notified": notified,
+        },
+    )
+    return {
+        **created,
+        "zScore": round(z_score, 4),
+        "robustZScore": round(robust_z_score, 4),
+        "combinedScore": round(combined_score, 4),
+        "persisted": persisted,
+        "notified": notified,
+    }
+
+
+@app.put("/api/ai/anomalies/{anomaly_id}/resolve")
+@metric_guard("anomaly_resolve")
+def resolve_anomaly(anomaly_id: str, payload: ResolveAnomalyPayload, request: Request) -> dict[str, Any]:
+    # branch scope check follows anomaly lookup; role check first.
+    actor = authorize_request(request, None, {"ADMIN", "MANAGER"})
+    for item in ANOMALIES:
+        if item["id"] == anomaly_id:
+            if actor["role"] == "MANAGER":
+                item_branch = str(item.get("branchId") or "").strip()
+                actor_branch = str(actor.get("branchId") or "").strip()
+                if item_branch and actor_branch and item_branch != actor_branch:
+                    raise HTTPException(status_code=403, detail="Manager cannot resolve anomaly of other branch")
+            item["isResolved"] = True
+            item["resolvedAt"] = datetime.now(timezone.utc).isoformat()
+            item["resolutionNote"] = payload.note
+            log_audit("/api/ai/anomalies/resolve", "resolve", True, item.get("branchId"))
+            return {"success": True, "item": item}
+    log_audit("/api/ai/anomalies/resolve", "resolve", False)
+    return {"success": False, "message": "Anomaly not found"}
+
+
+@app.get("/api/ai/anomalies/summary")
+@metric_guard("anomaly_summary")
+def anomalies_summary(request: Request, branchId: str) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    branchId = normalize_branch_id(branchId)
+    items = anomalies(request, branchId).get("items", [])
+    resolved = sum(1 for a in items if a.get("isResolved"))
+    log_audit("/api/ai/anomalies/summary", "summary", True, branchId)
+    return {"branchId": branchId, "total": len(items), "resolved": resolved, "open": len(items) - resolved}
+
+
+@app.get("/api/ai/sentiment/summary")
+@metric_guard("sentiment_summary")
+def sentiment_summary(request: Request, branchId: str) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    branchId = normalize_branch_id(branchId)
+    if REPORT_DATABASE_URL:
+        try:
+            rows = execute_sql(
+                'SELECT label, COUNT(*)::int AS count FROM sentiment_analysis WHERE "branchId" = %s GROUP BY label',
+                [branchId],
+            )
+            total = sum(int(row.get("count") or 0) for row in rows)
+            if total > 0:
+                mapped = {str(row.get("label")).upper(): int(row.get("count") or 0) for row in rows}
+                track_response_source("/api/ai/sentiment/summary", "db")
+                return {
+                    "branchId": branchId,
+                    "positive": round(mapped.get("POSITIVE", 0) / total, 4),
+                    "neutral": round(mapped.get("NEUTRAL", 0) / total, 4),
+                    "negative": round(mapped.get("NEGATIVE", 0) / total, 4),
+                    "sampleSize": total,
+                    "modelVersion": AI_ACTIVE_MODEL_VERSION,
+                    "source": "db",
+                }
+        except Exception:
+            pass
+
+    log_audit("/api/ai/sentiment/summary", "summary", True, branchId)
+    track_response_source("/api/ai/sentiment/summary", "fallback")
+    return {"branchId": branchId, "positive": 0.78, "neutral": 0.15, "negative": 0.07, "sampleSize": 120, "modelVersion": AI_ACTIVE_MODEL_VERSION, "source": "fallback"}
+
+
+@app.get("/api/ai/sentiment/trend")
+@metric_guard("sentiment_trend")
+def sentiment_trend(request: Request, branchId: str, days: int = 7) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    branchId = normalize_branch_id(branchId)
+    if REPORT_DATABASE_URL:
+        try:
+            rows = execute_sql(
+                """
+                SELECT DATE("analyzedAt") AS date, label, COUNT(*)::int AS count
+                FROM sentiment_analysis
+                WHERE "branchId" = %s
+                  AND "analyzedAt" >= (CURRENT_DATE - (%s::int || ' days')::interval)
+                GROUP BY DATE("analyzedAt"), label
+                ORDER BY DATE("analyzedAt") ASC
+                """,
+                [branchId, max(1, min(days, 30))],
+            )
+            if rows:
+                grouped: dict[str, dict[str, int]] = {}
+                for row in rows:
+                    d = str(row.get("date"))[:10]
+                    label = str(row.get("label") or "NEUTRAL").upper()
+                    grouped.setdefault(d, {"POSITIVE": 0, "NEUTRAL": 0, "NEGATIVE": 0})
+                    grouped[d][label] = grouped[d].get(label, 0) + int(row.get("count") or 0)
+                points = []
+                for d in sorted(grouped.keys()):
+                    total = sum(grouped[d].values()) or 1
+                    points.append(
+                        {
+                            "date": d,
+                            "positive": round(grouped[d]["POSITIVE"] / total, 4),
+                            "neutral": round(grouped[d]["NEUTRAL"] / total, 4),
+                            "negative": round(grouped[d]["NEGATIVE"] / total, 4),
+                        }
+                    )
+                track_response_source("/api/ai/sentiment/trend", "db")
+                return {"branchId": branchId, "points": points, "source": "db"}
+        except Exception:
+            pass
+
+    today = datetime.now(timezone.utc).date()
+    points = []
+    for i in range(max(1, min(days, 30))):
+        d = today - timedelta(days=i)
+        points.append({"date": d.isoformat(), "positive": 0.7 + (i % 3) * 0.03, "neutral": 0.2 - (i % 2) * 0.02, "negative": 0.1 - (i % 2) * 0.01})
+    log_audit("/api/ai/sentiment/trend", "trend", True, branchId)
+    track_response_source("/api/ai/sentiment/trend", "fallback")
+    return {"branchId": branchId, "points": list(reversed(points)), "source": "fallback"}
+
+
+@app.get("/api/ai/sentiment/issues-top")
+@metric_guard("sentiment_issues_top")
+def sentiment_issues_top(request: Request, branchId: str, days: int = 7, limit: int = 3) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    branchId = normalize_branch_id(branchId)
+    safe_days = max(1, min(days, 30))
+    safe_limit = max(1, min(limit, 10))
+    if REPORT_DATABASE_URL:
+        try:
+            rows = execute_sql(
+                """
+                SELECT "originalText"
+                FROM sentiment_analysis
+                WHERE "branchId" = %s
+                  AND label = 'NEGATIVE'
+                  AND "analyzedAt" >= (CURRENT_DATE - (%s::int || ' days')::interval)
+                ORDER BY "analyzedAt" DESC
+                LIMIT 500
+                """,
+                [branchId, safe_days],
+            )
+            issues = top_negative_issues([str(row.get("originalText") or "") for row in rows], safe_limit)
+            track_response_source("/api/ai/sentiment/issues-top", "db")
+            return {"branchId": branchId, "days": safe_days, "issues": issues, "source": "db"}
+        except Exception:
+            pass
+    issues = [{"issue": "cho-lau", "count": 5}, {"issue": "het-mon", "count": 4}, {"issue": "thai-do", "count": 3}]
+    track_response_source("/api/ai/sentiment/issues-top", "fallback")
+    return {"branchId": branchId, "days": safe_days, "issues": issues[:safe_limit], "source": "fallback"}
+
+
+@app.post("/api/ai/sentiment/analyze")
+@metric_guard("sentiment_analyze")
+def sentiment_analyze(payload: SentimentAnalyzePayload, request: Request) -> dict[str, Any]:
+    authorize_request(request, payload.branchId, {"ADMIN", "MANAGER"})
+    payload.branchId = normalize_branch_id(payload.branchId)
+    sanitized_text = redact_pii_text(payload.text)
+    sentiment_source = "fallback"
+    persist_reason = "fallback_lexicon_v2"
+    try:
+        label, confidence, scores, explanation = classify_sentiment_with_gemini(sanitized_text)
+        sentiment_source = "gemini"
+        persist_reason = "gemini_flash"
+        record_sentiment_telemetry("gemini", True, confidence=confidence)
+    except Exception as gemini_error:  # pylint: disable=broad-except
+        label, confidence, scores, explanation = classify_sentiment(sanitized_text)
+        explanation["geminiError"] = str(gemini_error)[:160]
+        sentiment_source = "fallback"
+        persist_reason = "fallback_lexicon_v2"
+        record_sentiment_telemetry("gemini", False, error=str(gemini_error))
+        record_sentiment_telemetry("fallback", True, confidence=confidence)
+    persisted = False
+    if REPORT_DATABASE_URL:
+        try:
+            with psycopg.connect(REPORT_DATABASE_URL, autocommit=True) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO sentiment_analysis ("branchId", "sourceType", "sourceId", "originalText", label, confidence, reason, "modelVersion", "analyzedAt")
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        """,
+                        (
+                            payload.branchId,
+                            str(payload.sourceType or "CHAT").upper(),
+                            payload.sourceId,
+                            sanitized_text,
+                            label,
+                            confidence,
+                            persist_reason,
+                            AI_ACTIVE_MODEL_VERSION,
+                        ),
+                    )
+            persisted = True
+        except Exception:
+            persisted = False
+    log_audit(
+        "/api/ai/sentiment/analyze",
+        "analyze",
+        True,
+        payload.branchId,
+        metadata={"label": label, "positiveScore": explanation.get("positiveScore"), "negativeScore": explanation.get("negativeScore")},
+    )
+    return {
+        "branchId": payload.branchId,
+        "label": label,
+        "confidence": confidence,
+        "scores": scores,
+        "persisted": persisted,
+        "reason": "gemini_flash+fallback_lexicon_v2",
+        "source": sentiment_source,
+        "explanation": explanation,
+        "sanitized": sanitized_text != str(payload.text or ""),
+    }
+
+
+@app.post("/api/ai/chat")
+@metric_guard("chat")
+def ai_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "ai_chat", AI_RATE_LIMIT_CHAT_PER_MINUTE)
+    start = time.perf_counter()
+    ensure_kb_fresh()
+    if payload.branchId is not None:
+        payload.branchId = normalize_branch_id(payload.branchId)
+    question = str(payload.message or payload.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="message/question is required")
+    sanitized_question = redact_pii_text(question)
+
+    answer, intent, confidence, escalated = answer_from_knowledge_base(sanitized_question)
+    generated_sql = None
+    sql_result: list[dict[str, Any]] = []
+    success = True
+    error_message = None
+
+    if intent == "ESCALATE" and REPORT_DATABASE_URL:
+        generated_sql = map_question_to_sql(sanitized_question, payload.branchId)
+        try:
+            params = [payload.branchId] if payload.branchId and "%s" in generated_sql else []
+            sql_result = execute_sql(generated_sql, params)
+            if sql_result:
+                answer = f"Mình đã lấy dữ liệu sơ bộ ({len(sql_result)} dòng) và đã chuyển nhân viên xử lý chi tiết."
+                confidence = 0.58
+                escalated = True
+        except Exception as error:  # pylint: disable=broad-except
+            success = False
+            error_message = str(error)
+
+    chat_id = str(uuid4())
+    now_iso = datetime.now(timezone.utc).isoformat()
+    record = {
+        "id": chat_id,
+        "branchId": payload.branchId,
+        "sessionId": payload.sessionId,
+        "tableId": payload.tableId,
+        "question": sanitized_question,
+        "answer": answer,
+        "intent": intent,
+        "confidence": round(confidence, 2),
+        "escalated": escalated,
+        "generatedSql": generated_sql,
+        "createdAt": now_iso,
+    }
+    CHAT_HISTORY.append(record)
+
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    log_audit(
+        "/api/ai/chat",
+        "chat_query",
+        success,
+        payload.branchId,
+        latency_ms=latency_ms,
+        metadata={"error": error_message, "intent": intent, "questionPreview": sanitized_question[:120]},
+    )
+
+    return {
+        **record,
+        "reply": answer,
+        "sqlResult": sql_result,
+        "isSuccessful": success,
+        "suggestions": ["Doanh thu hôm nay?", "Món bán chạy nhất?", "Khuyến mãi đang chạy?"],
+    }
+
+
+@app.get("/api/ai/chat/history")
+@metric_guard("chat_history")
+def ai_chat_history(request: Request, branchId: str | None = None, limit: int = 20) -> dict[str, Any]:
+    authorize_request(request, branchId, {"ADMIN", "MANAGER"})
+    records = CHAT_HISTORY
+    if branchId:
+        records = [item for item in records if item.get("branchId") == branchId]
+    return {"items": records[-max(1, min(limit, 50)) :]}
+
+
+@app.get("/api/ai/chat/suggestions")
+@metric_guard("chat_suggestions")
+def ai_chat_suggestions(request: Request) -> dict[str, Any]:
+    authorize_request(request, None, {"ADMIN", "MANAGER"})
+    return {"items": ["Doanh thu hôm nay so với hôm qua?", "Món bán chạy nhất tuần này?", "Có cảnh báo bất thường nào đang mở?", "Tồn kho nguyên liệu nào sắp hết?"]}
+
+
+@app.post("/api/ai/report-chat")
+@metric_guard("report_chat")
+def report_chat(payload: ReportChatPayload, request: Request) -> dict[str, Any]:
+    enforce_rate_limit(request, "report_chat", AI_RATE_LIMIT_REPORT_CHAT_PER_MINUTE)
+    start = time.perf_counter()
+    question = str(payload.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+    sanitized_question = redact_pii_text(question)
+
+    branch_id = normalize_branch_id(payload.branchId) if payload.branchId is not None else None
+    role = str(payload.role or "MANAGER").upper()
+    actor = authorize_request(request, branch_id, {"ADMIN", "MANAGER"})
+    if actor["role"] == "ADMIN":
+        role = "ADMIN"
+    elif actor["role"] == "MANAGER":
+        role = "MANAGER"
+    intent = infer_report_intent(sanitized_question)
+    sql = map_question_to_sql(sanitized_question, branch_id)
+
+    rows: list[dict[str, Any]] = []
+    success = True
+    error_message = None
+    try:
+        params = [branch_id] if branch_id and "%s" in sql else []
+        rows = execute_sql(sql, params)
+        answer = summarize_sql_result(intent, rows)
+    except Exception as error:  # pylint: disable=broad-except
+        success = False
+        error_message = str(error)
+        answer = "Không thể thực thi truy vấn báo cáo tại thời điểm này."
+
+    execution_ms = int((time.perf_counter() - start) * 1000)
+    log_audit(
+        "/api/ai/report-chat",
+        "report_chat",
+        success,
+        branch_id,
+        actor_id=payload.userId,
+        latency_ms=execution_ms,
+        metadata={"intent": intent, "error": error_message, "role": role, "questionPreview": sanitized_question[:120]},
+    )
+
+    return {
+        "answer": answer,
+        "sql": sql if role == "ADMIN" else None,
+        "executionTimeMs": execution_ms,
+        "intent": intent,
+        "isSuccessful": success,
+        "rowCount": len(rows),
+        "sampleRows": rows[:5],
+    }
