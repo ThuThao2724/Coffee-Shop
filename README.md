@@ -752,3 +752,4 @@ Chi tiết xem thêm: [docs/sepay-webhook-relay.md](docs/sepay-webhook-relay.md)
 - Da them khoi `AI Insights` trong trang Reports:
   - hien thi forecast/anomaly/sentiment tom tat
   - fallback UX khi AI service khong kha dung.
+  -- H
