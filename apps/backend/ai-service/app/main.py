@@ -28,6 +28,8 @@ DATA_FRESHNESS_MINUTES = Gauge("ai_data_freshness_minutes", "Latest data freshne
 SENTIMENT_SOURCE_COUNT = Counter("ai_sentiment_source_total", "Sentiment source usage", ["source", "status"])
 
 REPORT_DATABASE_URL = os.getenv("REPORT_DATABASE_URL", "").strip()
+ORDER_DATABASE_URL = os.getenv("ORDER_DATABASE_URL", "").strip()
+PAYMENT_DATABASE_URL = os.getenv("PAYMENT_DATABASE_URL", "").strip()
 CHATBOT_SQL_TIMEOUT_MS = int(os.getenv("AI_CHATBOT_SQL_TIMEOUT_MS", "2000"))
 CHATBOT_MAX_ROWS = int(os.getenv("AI_CHATBOT_MAX_ROWS", "200"))
 AI_ROLLOUT_PERCENT = int(os.getenv("AI_ROLLOUT_PERCENT", "10"))
@@ -732,8 +734,14 @@ def sanitize_sql(sql: str) -> str:
 def execute_sql(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
     if not REPORT_DATABASE_URL:
         return []
+    return execute_sql_with_url(REPORT_DATABASE_URL, sql, params)
+
+
+def execute_sql_with_url(database_url: str, sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    if not database_url:
+        return []
     normalized = sanitize_sql(sql)
-    with psycopg.connect(REPORT_DATABASE_URL) as conn:
+    with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
             cur.execute(f"SET LOCAL statement_timeout = '{CHATBOT_SQL_TIMEOUT_MS}ms'")
             cur.execute(normalized, params or [])
@@ -1056,22 +1064,47 @@ def std_dev(values: list[float], mean_value: float) -> float:
 
 
 def historical_daily_revenue(branch_id: str, lookback_days: int = 90) -> list[dict[str, Any]]:
-    if not REPORT_DATABASE_URL:
+    if not ORDER_DATABASE_URL or not PAYMENT_DATABASE_URL:
         return []
     try:
-        rows = execute_sql(
+        order_rows = execute_sql_with_url(
+            ORDER_DATABASE_URL,
             """
-            SELECT DATE(o."createdAt") AS date, COALESCE(SUM(o."finalAmount"), 0) AS revenue
-            FROM order_entity o
+            SELECT id
+            FROM orders o
             WHERE o."branchId" = %s
-              AND COALESCE(o."paymentStatus", 'UNPAID') = 'PAID'
               AND o."createdAt" >= (CURRENT_DATE - (%s::int || ' days')::interval)
-            GROUP BY DATE(o."createdAt")
-            ORDER BY DATE(o."createdAt") ASC
             """,
             [branch_id, max(7, min(lookback_days, 365))],
         )
-        return rows
+        order_ids = [str(row.get("id") or "").strip() for row in order_rows if str(row.get("id") or "").strip()]
+        if not order_ids:
+            return []
+
+        revenue_by_date: dict[str, float] = {}
+        for idx in range(0, len(order_ids), 500):
+            chunk = order_ids[idx : idx + 500]
+            placeholders = ",".join(["%s"] * len(chunk))
+            payment_rows = execute_sql_with_url(
+                PAYMENT_DATABASE_URL,
+                f"""
+                SELECT DATE(COALESCE(p."paidAt", p."createdAt")) AS date,
+                       COALESCE(SUM(p.amount), 0) AS revenue
+                FROM payments p
+                WHERE p.status = 'PAID'
+                  AND p."orderId" IN ({placeholders})
+                GROUP BY DATE(COALESCE(p."paidAt", p."createdAt"))
+                ORDER BY DATE(COALESCE(p."paidAt", p."createdAt")) ASC
+                """,
+                chunk,
+            )
+            for row in payment_rows:
+                key = str(row.get("date") or "")[:10]
+                if not key:
+                    continue
+                revenue_by_date[key] = revenue_by_date.get(key, 0.0) + decimal_from_any(row.get("revenue"), 0.0)
+
+        return [{"date": date, "revenue": revenue_by_date[date]} for date in sorted(revenue_by_date)]
     except Exception:
         return []
 
@@ -1119,93 +1152,102 @@ def merge_recommendation_candidates(
 
 def build_revenue_forecast_from_history(branch_id: str, days: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     now = datetime.now(timezone.utc)
-    history = historical_daily_revenue(branch_id, 120)
+    history = historical_daily_revenue(branch_id, 180)
+
+    def fallback_forecast(reason: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        baseline = 4_200_000.0
+        points = []
+        for idx in range(days):
+            predicted = baseline * (1 + (0.015 * ((idx % 7) - 3)))
+            points.append(
+                {
+                    "date": (now + timedelta(days=idx)).date().isoformat(),
+                    "predictedRevenue": int(max(0.0, predicted)),
+                    "confidenceLow": int(max(0.0, predicted * 0.86)),
+                    "confidenceHigh": int(max(0.0, predicted * 1.14)),
+                    "confidence": 0.75,
+                }
+            )
+        return points, {"source": "fallback", "historyDays": 0, "baseline": baseline, "reason": reason}
+
     if not history:
-        baseline = 4_200_000.0
-        points = []
-        for idx in range(days):
-            predicted = baseline * (1 + (0.015 * ((idx % 7) - 3)))
-            points.append(
-                {
-                    "date": (now + timedelta(days=idx)).date().isoformat(),
-                    "predictedRevenue": int(max(0.0, predicted)),
-                    "confidenceLow": int(max(0.0, predicted * 0.86)),
-                    "confidenceHigh": int(max(0.0, predicted * 1.14)),
-                    "confidence": 0.75,
-                }
-            )
-        return points, {"source": "fallback", "historyDays": 0, "baseline": baseline}
+        return fallback_forecast("no-history")
 
-    series: list[tuple[datetime.date, float]] = []
-    for row in history:
-        date_raw = str(row.get("date") or "")[:10]
-        try:
-            date_value = datetime.fromisoformat(date_raw).date()
-        except Exception:
-            continue
-        revenue_value = max(0.0, decimal_from_any(row.get("revenue"), 0))
-        series.append((date_value, revenue_value))
-    if not series:
-        baseline = 4_200_000.0
-        points = []
-        for idx in range(days):
-            predicted = baseline * (1 + (0.015 * ((idx % 7) - 3)))
-            points.append(
-                {
-                    "date": (now + timedelta(days=idx)).date().isoformat(),
-                    "predictedRevenue": int(max(0.0, predicted)),
-                    "confidenceLow": int(max(0.0, predicted * 0.86)),
-                    "confidenceHigh": int(max(0.0, predicted * 1.14)),
-                    "confidence": 0.75,
-                }
-            )
-        return points, {"source": "fallback", "historyDays": 0, "baseline": baseline}
+    import pandas as pd
+    from prophet import Prophet
+    import logging
+    logging.getLogger("prophet").setLevel(logging.WARNING)
+    logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
 
-    values = [value for _, value in series]
-    mean_value = sum(values) / len(values)
-    day_factors = {idx: [] for idx in range(7)}
-    for day, value in series:
-        day_factors[day.weekday()].append(value)
-    weekday_factor: dict[int, float] = {}
-    for weekday in range(7):
-        weekday_avg = sum(day_factors[weekday]) / len(day_factors[weekday]) if day_factors[weekday] else mean_value
-        weekday_factor[weekday] = weekday_avg / max(mean_value, 1.0)
+    df = pd.DataFrame(history)
+    df = df.rename(columns={"date": "ds", "revenue": "y"})
+    df["ds"] = pd.to_datetime(df["ds"], errors="coerce")
+    df = df.dropna(subset=["ds"]).sort_values("ds").reset_index(drop=True)
 
-    trend_window = min(14, len(values))
-    recent_avg = sum(values[-trend_window:]) / trend_window
-    past_avg = sum(values[-(trend_window * 2):-trend_window]) / trend_window if len(values) >= trend_window * 2 else mean_value
-    trend_ratio = recent_avg / max(past_avg, 1.0)
-    trend_ratio = max(0.85, min(1.2, trend_ratio))
+    MIN_POINTS = 14
+    if len(df) < MIN_POINTS:
+        return fallback_forecast(f"insufficient-history:{len(df)}")
 
-    mape_proxy = min(25.0, max(5.0, abs(trend_ratio - 1.0) * 100 + 7.5))
-    confidence_band = max(0.08, min(0.2, mape_proxy / 100))
-    confidence_score = round(max(0.65, min(0.9, 1 - (mape_proxy / 100))), 2)
-
-    points: list[dict[str, Any]] = []
-    for idx in range(days):
-        forecast_date = (now + timedelta(days=idx)).date()
-        seasonal = weekday_factor.get(forecast_date.weekday(), 1.0)
-        step_trend = 1 + ((trend_ratio - 1) * min(1.0, idx / max(1, days - 1)))
-        predicted = max(0.0, mean_value * seasonal * step_trend)
-        points.append(
-            {
-                "date": forecast_date.isoformat(),
-                "predictedRevenue": int(predicted),
-                "confidenceLow": int(max(0.0, predicted * (1 - confidence_band))),
-                "confidenceHigh": int(max(0.0, predicted * (1 + confidence_band))),
-                "confidence": confidence_score,
-            }
+    try:
+        model = Prophet(
+            weekly_seasonality=True,
+            yearly_seasonality=len(df) >= 365,
+            daily_seasonality=False,
+            seasonality_mode="multiplicative",
+            interval_width=0.8,
         )
+        model.fit(df[["ds", "y"]])
 
-    metadata = {
-        "source": "history-derived",
-        "historyDays": len(series),
-        "meanDailyRevenue": int(mean_value),
-        "trendRatio": round(trend_ratio, 4),
-        "mapeProxy": round(mape_proxy, 2),
-    }
-    return points, metadata
+        future = model.make_future_dataframe(periods=days, freq="D")
+        forecast_df = model.predict(future)
+        result = forecast_df[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(days).reset_index(drop=True)
 
+        mape_value = None
+        holdout_size = max(3, int(len(df) * 0.2))
+        if len(df) >= MIN_POINTS + holdout_size:
+            train_df = df.iloc[:-holdout_size]
+            test_df = df.iloc[-holdout_size:]
+            eval_model = Prophet(
+                weekly_seasonality=True,
+                yearly_seasonality=len(train_df) >= 365,
+                daily_seasonality=False,
+                seasonality_mode="multiplicative",
+            )
+            eval_model.fit(train_df[["ds", "y"]])
+            eval_future = eval_model.make_future_dataframe(periods=holdout_size, freq="D")
+            eval_forecast = eval_model.predict(eval_future).tail(holdout_size).reset_index(drop=True)
+            actual = test_df["y"].to_numpy()
+            predicted = eval_forecast["yhat"].to_numpy()
+            nonzero_mask = actual != 0
+            if nonzero_mask.any():
+                mape_value = float(
+                    (abs((actual[nonzero_mask] - predicted[nonzero_mask]) / actual[nonzero_mask])).mean() * 100
+                )
+
+        points: list[dict[str, Any]] = []
+        for _, row in result.iterrows():
+            predicted = max(0.0, float(row["yhat"]))
+            low = max(0.0, float(row["yhat_lower"]))
+            high = max(0.0, float(row["yhat_upper"]))
+            points.append(
+                {
+                    "date": row["ds"].date().isoformat(),
+                    "predictedRevenue": int(predicted),
+                    "confidenceLow": int(low),
+                    "confidenceHigh": int(high),
+                    "confidence": 0.8 if mape_value is None else round(max(0.5, min(0.95, 1 - mape_value / 100)), 2),
+                }
+            )
+
+        metadata = {
+            "source": "prophet",
+            "historyDays": len(df),
+            "mape": round(mape_value, 2) if mape_value is not None else None,
+        }
+        return points, metadata
+
+    except Exception as exc:
+        return fallback_forecast(f"prophet-error:{type(exc).__name__}")
 
 def top_negative_issues(texts: list[str], limit: int = 3) -> list[dict[str, Any]]:
     topic_counts: dict[str, int] = {key: 0 for key in ISSUE_TOPIC_KEYWORDS.keys()}
@@ -2087,9 +2129,33 @@ def resolve_anomaly(anomaly_id: str, payload: ResolveAnomalyPayload, request: Re
                 actor_branch = str(actor.get("branchId") or "").strip()
                 if item_branch and actor_branch and item_branch != actor_branch:
                     raise HTTPException(status_code=403, detail="Manager cannot resolve anomaly of other branch")
+
+            resolved_at = datetime.now(timezone.utc)
+            resolved_by = actor.get("id") or actor.get("userId") or actor.get("email")
+
             item["isResolved"] = True
-            item["resolvedAt"] = datetime.now(timezone.utc).isoformat()
+            item["resolvedAt"] = resolved_at.isoformat()
+            item["resolvedBy"] = resolved_by
             item["resolutionNote"] = payload.note
+
+            if REPORT_DATABASE_URL:
+                try:
+                    with psycopg.connect(REPORT_DATABASE_URL, autocommit=True) as conn:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                """
+                                UPDATE anomaly_alert
+                                SET "isResolved" = TRUE,
+                                    "resolvedBy" = %s,
+                                    "resolvedAt" = %s,
+                                    "resolutionNote" = %s
+                                WHERE id = %s
+                                """,
+                                (resolved_by, resolved_at, payload.note, anomaly_id),
+                            )
+                except Exception:
+                    pass
+
             log_audit("/api/ai/anomalies/resolve", "resolve", True, item.get("branchId"))
             return {"success": True, "item": item}
     log_audit("/api/ai/anomalies/resolve", "resolve", False)

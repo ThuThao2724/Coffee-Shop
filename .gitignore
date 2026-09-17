@@ -52,6 +52,10 @@ secrets/
 # Python / tooling
 **/__pycache__/
 **/*.pyc
+**/venv/
+**/.venv/
+*.bak
+*.backup_*
 
 # Docker / local runtime / generated backups
 backups/

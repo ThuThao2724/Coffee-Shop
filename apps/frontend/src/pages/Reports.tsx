@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import {
   Bar,
@@ -121,10 +121,7 @@ interface AiInsightState {
   available: boolean
   forecasts: AiRevenueForecast[]
   anomalies: Array<{ id: string; severity: string; description: string; isResolved: boolean }>
-  sentiment: { positive: number; neutral: number; negative: number } | null
-  sentimentTopIssues: Array<{ issue: string; count: number }>
   forecastSource?: string
-  sentimentSource?: string
   fallbackReason?: string
 }
 
@@ -232,21 +229,6 @@ interface RealtimeTelemetry {
   alerts: { p95LagHigh: boolean; subscriberDropHigh: boolean; disconnectRateHigh: boolean }
 }
 
-function formatSentimentIssueLabel(issue: string): string {
-  const normalized = String(issue || '').trim().toLowerCase()
-  const topicMap: Record<string, string> = {
-    cho_lau: 'Chờ lâu',
-    het_mon: 'Hết món',
-    thai_do: 'Thái độ phục vụ',
-    chat_luong: 'Chất lượng món',
-    gia_ca: 'Giá cả',
-  }
-  if (topicMap[normalized]) return topicMap[normalized]
-  return normalized
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (char) => char.toUpperCase())
-}
-
 function formatMoney(value: number): string {
   return `${new Intl.NumberFormat('vi-VN').format(Math.max(0, value || 0))}đ`
 }
@@ -293,8 +275,6 @@ export default function Reports() {
     available: false,
     forecasts: [],
     anomalies: [],
-    sentiment: null,
-    sentimentTopIssues: [],
   })
   const [rebuildingForecast, setRebuildingForecast] = useState(false)
   const [testingAnomaly, setTestingAnomaly] = useState(false)
@@ -357,27 +337,21 @@ export default function Reports() {
       setRealtimeTelemetry((realtimeMetricsRes.data || null) as RealtimeTelemetry | null)
 
       try {
-        const [forecastResult, anomalyResult, sentimentResult, sentimentIssuesResult, qualitySummaryResult, fallbackTrendResult, fallbackSummaryResult, recommendAbResult] = await Promise.allSettled([
+        const [forecastResult, anomalyResult, qualitySummaryResult, fallbackTrendResult, fallbackSummaryResult] = await Promise.allSettled([
           requestAiWithRetry('/ai/forecast/revenue', { branchId: effectiveAiBranchId, days: 7 }),
           requestAiWithRetry('/ai/anomalies', { branchId: effectiveAiBranchId }),
-          requestAiWithRetry('/ai/sentiment/summary', { branchId: effectiveAiBranchId }),
-          requestAiWithRetry('/ai/sentiment/issues-top', { branchId: effectiveAiBranchId, days: 7, limit: 3 }),
           requestAiWithRetry('/ai/ops/quality-summary', { branchId: effectiveAiBranchId }),
           requestAiWithRetry('/ai/ops/fallback-trend', { branchId: effectiveAiBranchId, windowMinutes: fallbackTrendWindowMinutes }),
           requestAiWithRetry('/ai/ops/fallback-trend-summary', { branchId: effectiveAiBranchId, windowMinutes: fallbackTrendWindowMinutes, threshold: 0.2 }),
-          requestAiWithRetry('/ai/recommend/ab-summary', { branchId: effectiveAiBranchId, lookbackHours: 24 }),
         ])
 
         const forecastData = forecastResult.status === 'fulfilled' ? forecastResult.value.data : null
         const anomalyData = anomalyResult.status === 'fulfilled' ? anomalyResult.value.data : null
-        const sentimentData = sentimentResult.status === 'fulfilled' ? sentimentResult.value.data : null
-        const sentimentIssuesData = sentimentIssuesResult.status === 'fulfilled' ? sentimentIssuesResult.value.data : null
         const qualityData = qualitySummaryResult.status === 'fulfilled' ? qualitySummaryResult.value.data : null
         const fallbackTrendData = fallbackTrendResult.status === 'fulfilled' ? fallbackTrendResult.value.data : null
         const fallbackSummaryData = fallbackSummaryResult.status === 'fulfilled' ? fallbackSummaryResult.value.data : null
-        const recommendAbData = recommendAbResult.status === 'fulfilled' ? recommendAbResult.value.data : null
-        const aiAvailable = Boolean(forecastData || anomalyData || sentimentData || sentimentIssuesData)
-        const reasons = [forecastResult, anomalyResult, sentimentResult, sentimentIssuesResult]
+        const aiAvailable = Boolean(forecastData || anomalyData)
+        const reasons = [forecastResult, anomalyResult]
           .filter((item): item is PromiseRejectedResult => item.status === 'rejected')
           .map((item) => item.reason?.response?.data?.message || item.reason?.message || 'request_failed')
 
@@ -386,22 +360,6 @@ export default function Reports() {
           forecasts: Array.isArray(forecastData?.forecasts) ? (forecastData.forecasts as AiRevenueForecast[]) : [],
           anomalies: Array.isArray(anomalyData?.items) ? anomalyData.items : [],
           forecastSource: String(forecastData?.source || ''),
-          sentimentSource: String(sentimentData?.source || ''),
-          sentiment: sentimentData
-            ? {
-                positive: Number(sentimentData.positive || 0),
-                neutral: Number(sentimentData.neutral || 0),
-                negative: Number(sentimentData.negative || 0),
-              }
-            : null,
-          sentimentTopIssues: Array.isArray(sentimentIssuesData?.issues)
-            ? sentimentIssuesData.issues
-                .map((item: any) => ({
-                  issue: String(item?.issue || '').trim(),
-                  count: Number(item?.count || 0),
-                }))
-                .filter((item: { issue: string; count: number }) => item.issue)
-            : [],
           fallbackReason: reasons.length ? reasons.join('; ') : undefined,
         })
         setQualitySummary((qualityData || null) as QualitySummaryResponse | null)
@@ -409,16 +367,13 @@ export default function Reports() {
         setFallbackTrendSummary(
           Array.isArray(fallbackSummaryData?.items) ? (fallbackSummaryData.items as FallbackTrendSummaryItem[]) : [],
         )
-        setRecommendAbSummary((recommendAbData || null) as RecommendAbSummary | null)
+        setRecommendAbSummary(null)
       } catch (aiError: any) {
         setAiInsight({
           available: false,
           forecasts: [],
           anomalies: [],
-          sentiment: null,
-          sentimentTopIssues: [],
           forecastSource: '',
-          sentimentSource: '',
           fallbackReason: aiError?.response?.data?.message || 'AI service unavailable',
         })
         setQualitySummary(null)
@@ -549,6 +504,38 @@ export default function Reports() {
 
     return noRevenue && noOrders && noTransactions && noTopItems && noStaffStats
   }, [dashboard, selectedBranchId, staffItems, topItems])
+
+  const forecastTotal = useMemo(
+    () => aiInsight.forecasts.reduce((acc, item) => acc + Number(item.predictedRevenue || 0), 0),
+    [aiInsight.forecasts],
+  )
+
+  const forecastAverage = useMemo(
+    () => (aiInsight.forecasts.length ? Math.round(forecastTotal / aiInsight.forecasts.length) : 0),
+    [aiInsight.forecasts.length, forecastTotal],
+  )
+
+  const forecastConfidenceRange = useMemo(() => {
+    if (!aiInsight.forecasts.length) return { low: 0, high: 0 }
+    return aiInsight.forecasts.reduce(
+      (acc, item) => ({
+        low: acc.low + Number(item.confidenceLow || 0),
+        high: acc.high + Number(item.confidenceHigh || 0),
+      }),
+      { low: 0, high: 0 },
+    )
+  }, [aiInsight.forecasts])
+
+  const revenueForecastChartData = useMemo(
+    () =>
+      aiInsight.forecasts.map((item) => ({
+        date: formatPeriodLabel(item.date),
+        forecast: Number(item.predictedRevenue || 0),
+        low: Number(item.confidenceLow || 0),
+        high: Number(item.confidenceHigh || 0),
+      })),
+    [aiInsight.forecasts],
+  )
 
   const fallbackRows = useMemo(() => {
     if (!qualitySummary) return []
@@ -771,12 +758,11 @@ export default function Reports() {
         </Card>
       </div>}
 
-      <Card title="AI Insights" subtitle={aiInsight.available ? 'Dự báo & cảnh báo thông minh' : 'Fallback rule-based'}>
+      <Card title="AI Revenue Intelligence" subtitle={aiInsight.available ? 'Phân tích và dự báo doanh thu bằng AI' : 'Fallback rule-based'}>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-slate-500">
             Branch AI: <span className="font-medium text-slate-700">{effectiveAiBranchId}</span>
             {aiInsight.forecastSource ? ` · Forecast source: ${aiInsight.forecastSource}` : ''}
-            {aiInsight.sentimentSource ? ` · Sentiment source: ${aiInsight.sentimentSource}` : ''}
           </p>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="secondary" onClick={() => void handleRebuildForecast()} loading={rebuildingForecast}>
@@ -793,227 +779,284 @@ export default function Reports() {
           </p>
         )}
         {aiInsight.available && (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
-            <div className="rounded-xl border border-sky-100 bg-sky-50/70 p-3">
-              <p className="text-xs text-slate-600">Dự báo 7 ngày</p>
-              <p className="text-lg font-semibold text-slate-900">
-                {formatMoney(aiInsight.forecasts.reduce((acc, item) => acc + Number(item.predictedRevenue || 0), 0))}
-              </p>
-            </div>
-            <div className="rounded-xl border border-amber-100 bg-amber-50/70 p-3">
-              <p className="text-xs text-slate-600">Anomaly đang mở</p>
-              <p className="text-lg font-semibold text-slate-900">
-                {aiInsight.anomalies.filter((item) => !item.isResolved).length}
-              </p>
-            </div>
-            <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-3">
-              <p className="text-xs text-slate-600">Sentiment tích cực</p>
-              <p className="text-lg font-semibold text-slate-900">
-                {aiInsight.sentiment ? `${Math.round(aiInsight.sentiment.positive * 100)}%` : '-'}
-              </p>
-            </div>
-            <div className="rounded-xl border border-rose-100 bg-rose-50/70 p-3">
-              <p className="text-xs text-slate-600">Top vấn đề tiêu cực</p>
-              {aiInsight.sentimentTopIssues.length === 0 && <p className="text-sm font-medium text-slate-700">Chưa có dữ liệu</p>}
-              {aiInsight.sentimentTopIssues.length > 0 && (
-                <div className="space-y-1">
-                  {aiInsight.sentimentTopIssues.map((issue) => (
-                    <p key={issue.issue} className="text-xs text-slate-800">
-                      {formatSentimentIssueLabel(issue.issue)}: <span className="font-semibold">{issue.count}</span>
-                    </p>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </Card>
-
-      <Card title="AI Quality Summary" subtitle="Theo dõi chất lượng dữ liệu và fallback ratio">
-        {!qualitySummary && <p className="text-sm text-slate-500">Chưa có dữ liệu quality summary.</p>}
-        {qualitySummary && (
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <input
-                id="high-fallback-only"
-                type="checkbox"
-                checked={showOnlyHighFallback}
-                onChange={(e) => setShowOnlyHighFallback(e.target.checked)}
-              />
-              <label htmlFor="high-fallback-only" className="text-sm text-slate-700">
-                Chỉ hiện endpoint cảnh báo (fallback ratio ≥ 20%)
-              </label>
-            </div>
-            <div className="flex items-center gap-2">
-              <label htmlFor="fallback-window" className="text-sm text-slate-700">Khung thời gian trend</label>
-              <select
-                id="fallback-window"
-                value={fallbackTrendWindowMinutes}
-                onChange={(e) => setFallbackTrendWindowMinutes(Number(e.target.value || 120))}
-                className="rounded border border-amber-200 bg-white px-2 py-1 text-sm text-slate-700"
-              >
-                <option value={60}>60 phút</option>
-                <option value={120}>2 giờ</option>
-                <option value={360}>6 giờ</option>
-                <option value={1440}>24 giờ</option>
-              </select>
-            </div>
-            <div
-              className={`rounded-xl border px-3 py-2 text-sm ${
-                qualitySummary.quality.status === 'ok'
-                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                  : 'border-amber-200 bg-amber-50 text-amber-800'
-              }`}
-            >
-              Data quality: <span className="font-semibold">{qualitySummary.quality.status.toUpperCase()}</span>
-            </div>
-            {qualitySummary.modelQuality?.sentiment && (
-              <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-3 text-xs text-emerald-900">
-                <p className="font-semibold">Sentiment model quality</p>
-                <p>
-                  Gemini: {qualitySummary.modelQuality.sentiment.geminiEnabled ? 'ON' : 'OFF'} · success{' '}
-                  {Math.round(Number(qualitySummary.modelQuality.sentiment.ratios?.geminiSuccessRatio || 0) * 100)}% · fallback{' '}
-                  {Math.round(Number(qualitySummary.modelQuality.sentiment.ratios?.fallbackRatio || 0) * 100)}%
-                </p>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+              <div className="rounded-xl border border-sky-100 bg-sky-50/70 p-3">
+                <p className="text-xs text-slate-600">Dự báo 7 ngày</p>
+                <p className="text-lg font-semibold text-slate-900">{formatMoney(forecastTotal)}</p>
               </div>
-            )}
-
-            {qualitySummary.attention.count > 0 && (
-              <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">
-                <p className="font-semibold">Cảnh báo fallback cao ({qualitySummary.attention.count} endpoint)</p>
-                <div className="mt-1 space-y-1 text-xs">
-                  {Object.entries(qualitySummary.attention.highFallbackEndpoints).map(([endpoint, item]) => (
-                    <p key={endpoint}>
-                      {endpoint}: <span className="font-semibold">{Math.round((item.fallbackRatio || 0) * 100)}%</span> fallback
-                      ({item.fallbackResponses}/{item.totalResponses})
-                    </p>
-                  ))}
-                </div>
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-3">
+                <p className="text-xs text-slate-600">Trung bình/ngày</p>
+                <p className="text-lg font-semibold text-slate-900">{formatMoney(forecastAverage)}</p>
               </div>
-            )}
-
-            {fallbackRows.length > 0 && (
-              <div className="rounded-xl border border-amber-100 bg-white/90 p-3">
-                <p className="mb-2 text-sm font-semibold text-slate-800">Fallback ratio theo endpoint</p>
-                <div className="space-y-1 text-xs">
-                  {fallbackRows.map((row) => (
-                    <p key={row.endpoint}>
-                      {row.endpoint}: <span className="font-semibold">{Math.round(row.fallbackRatio * 100)}%</span>
-                      {' '}({row.fallbackResponses}/{row.totalResponses})
-                    </p>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {fallbackSummaryRows.length > 0 && (
               <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 p-3">
-                <p className="mb-2 text-sm font-semibold text-indigo-900">Xu hướng fallback theo endpoint</p>
-                <div className="space-y-1 text-xs text-indigo-900">
-                  {fallbackSummaryRows.slice(0, 8).map((item) => (
-                    <p key={`summary-${item.endpoint}`}>
-                      {item.endpoint}: {Math.round(item.latestFallbackRatio * 100)}% (tb {Math.round(item.avgFallbackRatio * 100)}%)
-                      {' '}· trend {item.trend} ({item.deltaRatio >= 0 ? '+' : ''}{Math.round(item.deltaRatio * 100)}%) · risk {item.riskScore}
-                    </p>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {fallbackPriorityRows.length > 0 && (
-              <div className="rounded-xl border border-rose-200 bg-rose-50 p-3">
-                <p className="mb-2 text-sm font-semibold text-rose-900">Ưu tiên xử lý ngay</p>
-                <div className="space-y-1 text-xs text-rose-900">
-                  {fallbackPriorityRows.map((item) => (
-                    <p key={`priority-${item.endpoint}`}>
-                      [{item.priority}] {item.endpoint}: {Math.round(item.latestFallbackRatio * 100)}% fallback · risk {item.riskScore}
-                    </p>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {fallbackTrendPivot.length > 0 && (
-              <div className="rounded-xl border border-sky-100 bg-sky-50/40 p-3">
-                <p className="mb-2 text-sm font-semibold text-slate-800">Trend fallback ratio ({fallbackTrendWindowMinutes} phút gần nhất)</p>
-                <div className="h-56">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={fallbackTrendPivot}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                      <XAxis dataKey="time" tick={{ fontSize: 12 }} />
-                      <YAxis tick={{ fontSize: 12 }} domain={[0, 100]} />
-                      <Tooltip />
-                      <Legend />
-                      {selectedFallbackEndpoints.map((endpoint, idx) => (
-                        <Line
-                          key={endpoint}
-                          type="monotone"
-                          dataKey={endpoint}
-                          name={endpoint}
-                          stroke={['#0284c7', '#f59e0b', '#ef4444', '#16a34a'][idx % 4]}
-                          strokeWidth={2}
-                          dot={false}
-                        />
-                      ))}
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-1">
-              {qualitySummary.quality.checks.map((check) => (
-                <p key={check.name} className={`text-xs ${check.ok ? 'text-emerald-700' : 'text-amber-700'}`}>
-                  {check.ok ? '✓' : '⚠'} {check.name}
+                <p className="text-xs text-slate-600">Khoảng tin cậy</p>
+                <p className="text-sm font-semibold text-slate-900">
+                  {formatMoney(forecastConfidenceRange.low)} - {formatMoney(forecastConfidenceRange.high)}
                 </p>
-              ))}
+              </div>
+              <div className="rounded-xl border border-amber-100 bg-amber-50/70 p-3">
+                <p className="text-xs text-slate-600">Cảnh báo doanh thu</p>
+                <p className="text-lg font-semibold text-slate-900">
+                  {aiInsight.anomalies.filter((item) => !item.isResolved).length}
+                </p>
+              </div>
             </div>
+            {revenueForecastChartData.length > 0 && (
+              <div className="h-64 rounded-xl border border-sky-100 bg-white/90 p-3">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={revenueForecastChartData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                    <YAxis tick={{ fontSize: 12 }} tickFormatter={(value) => `${Math.round(Number(value) / 1000000)}tr`} />
+                    <Tooltip formatter={(value) => formatMoney(Number(value || 0))} />
+                    <Legend />
+                    <Line type="monotone" dataKey="forecast" name="Dự báo" stroke="#0284c7" strokeWidth={3} dot />
+                    <Line type="monotone" dataKey="low" name="Tin cậy thấp" stroke="#94a3b8" strokeDasharray="4 4" dot={false} />
+                    <Line type="monotone" dataKey="high" name="Tin cậy cao" stroke="#64748b" strokeDasharray="4 4" dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+            {aiInsight.anomalies.filter((item) => !item.isResolved).length > 0 && (
+              <div className="rounded-xl border border-amber-100 bg-amber-50/70 p-3">
+                <p className="mb-2 text-sm font-semibold text-amber-900">Cảnh báo doanh thu cần xem</p>
+                <div className="space-y-1 text-xs text-amber-900">
+                  {aiInsight.anomalies
+                    .filter((item) => !item.isResolved)
+                    .slice(0, 5)
+                    .map((item) => (
+                      <p key={item.id}>
+                        [{item.severity}] {item.description}
+                      </p>
+                    ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </Card>
+      <Card title="Trạng thái hệ thống AI" subtitle="Theo dõi tình trạng hoạt động của các tính năng AI">
+        {!qualitySummary && <p className="text-sm text-slate-500">Chưa có dữ liệu quality summary.</p>}
+        {qualitySummary && (() => {
+          const endpointLabels: Record<string, string> = {
+            '/api/ai/anomalies': 'Phát hiện đơn hàng bất thường',
+            '/api/ai/forecast/revenue': 'Dự báo doanh thu bằng AI (Prophet)',
+          }
+          const checkLabels: Record<string, string> = {
+            sales_forecast_has_rows: 'Có dữ liệu dự báo doanh thu',
+            sales_forecast_no_negative: 'Dự báo không có giá trị âm bất thường',
+            sales_forecast_recent_coverage: 'Dự báo được cập nhật trong thời gian gần đây',
+            sentiment_has_rows: 'Có dữ liệu phân tích cảm xúc khách hàng',
+            anomaly_open_count_observed: 'Đã ghi nhận cảnh báo bất thường doanh thu',
+          }
+          const describeEndpoint = (ep: string) => endpointLabels[ep] || ep
+          const describeCheck = (name: string) => checkLabels[name] || name.replace(/_/g, ' ')
+          const isHealthy = qualitySummary.quality.status === 'ok'
+          const affectedFeatures = Object.keys(qualitySummary.attention?.highFallbackEndpoints || {}).map(describeEndpoint)
 
-      <Card title="Realtime Telemetry Alerts" subtitle="Cảnh báo vận hành backend stream">
-        {!realtimeTelemetry && <p className="text-sm text-slate-500">Chưa có dữ liệu telemetry.</p>}
-        {realtimeTelemetry && (
-          <div className="space-y-3">
-            {(realtimeTelemetry.alerts.p95LagHigh || realtimeTelemetry.alerts.subscriberDropHigh || realtimeTelemetry.alerts.disconnectRateHigh) && (
-              <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">
-                <p className="font-semibold">Có cảnh báo vận hành cần xử lý</p>
-                <p className="text-xs">
-                  p95 lag {Math.round(realtimeTelemetry.lag.p95Ms)}ms · drops {realtimeTelemetry.subscriberDrops} · disconnect rate {Math.round(realtimeTelemetry.disconnectRate * 100)}%
+          return (
+            <div className="space-y-3">
+              <div
+                className={`rounded-xl border px-4 py-3 text-sm ${
+                  isHealthy
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                    : 'border-amber-200 bg-amber-50 text-amber-900'
+                }`}
+              >
+                <p className="font-semibold">
+                  {isHealthy ? 'Hệ thống AI đang hoạt động tốt' : 'Một số tính năng AI đang gặp sự cố kỹ thuật'}
                 </p>
+                {!isHealthy && (
+                  <p className="mt-1 text-xs">
+                    {affectedFeatures.length > 0 ? affectedFeatures.join(', ') : 'Một số tính năng'}
+                    {' '}đang dùng phương án dự phòng. Các báo cáo doanh thu và hoạt động khác vẫn hiển thị bình thường.
+                  </p>
+                )}
               </div>
-            )}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-3">
-                <p className="text-xs text-slate-600">Subscribers</p>
-                <p className="text-lg font-semibold text-slate-900">{realtimeTelemetry.subscribers}</p>
-                <p className="text-xs text-slate-500">Peak: {realtimeTelemetry.peakSubscribers}</p>
-              </div>
-              <div className="rounded-xl border border-amber-100 bg-amber-50/60 p-3">
-                <p className="text-xs text-slate-600">p95 Lag</p>
-                <p className={`text-lg font-semibold ${realtimeTelemetry.alerts.p95LagHigh ? 'text-rose-700' : 'text-slate-900'}`}>
-                  {Math.round(realtimeTelemetry.lag.p95Ms)} ms
-                </p>
-                <p className="text-xs text-slate-500">Samples: {realtimeTelemetry.lag.samples}</p>
-              </div>
-              <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3">
-                <p className="text-xs text-slate-600">Subscriber Drops</p>
-                <p className={`text-lg font-semibold ${realtimeTelemetry.alerts.subscriberDropHigh ? 'text-rose-700' : 'text-slate-900'}`}>
-                  {realtimeTelemetry.subscriberDrops}
-                </p>
-                <p className="text-xs text-slate-500">Connections: {realtimeTelemetry.connections}</p>
-              </div>
-              <div className="rounded-xl border border-rose-100 bg-rose-50/60 p-3">
-                <p className="text-xs text-slate-600">Disconnect Rate</p>
-                <p className={`text-lg font-semibold ${realtimeTelemetry.alerts.disconnectRateHigh ? 'text-rose-700' : 'text-slate-900'}`}>
-                  {Math.round(realtimeTelemetry.disconnectRate * 100)}%
-                </p>
-                <p className="text-xs text-slate-500">Disconnects: {realtimeTelemetry.disconnects}</p>
-              </div>
+
+              <details className="rounded-xl border border-slate-200 bg-slate-50/60 p-3 text-xs text-slate-600">
+                <summary className="cursor-pointer select-none font-semibold text-slate-700">
+                  Xem chi tiết kỹ thuật (dành cho quản trị viên)
+                </summary>
+                <div className="mt-3 space-y-3">
+                  <div className="space-y-1">
+                    {qualitySummary.quality.checks.map((check) => (
+                      <p key={check.name} className={check.ok ? 'text-emerald-700' : 'text-amber-700'}>
+                        {check.ok ? '✅' : '⚠️'} {describeCheck(check.name)}
+                      </p>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="high-fallback-only"
+                      type="checkbox"
+                      checked={showOnlyHighFallback}
+                      onChange={(e) => setShowOnlyHighFallback(e.target.checked)}
+                    />
+                    <label htmlFor="high-fallback-only" className="text-slate-700">
+                      Chỉ hiện chức năng cảnh báo (tỉ lệ dự phòng ≥ 20%)
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="fallback-window" className="text-slate-700">Khung thời gian xu hướng</label>
+                    <select
+                      id="fallback-window"
+                      value={fallbackTrendWindowMinutes}
+                      onChange={(e) => setFallbackTrendWindowMinutes(Number(e.target.value || 120))}
+                      className="rounded border border-amber-200 bg-white px-2 py-1 text-slate-700"
+                    >
+                      <option value={60}>60 phút</option>
+                      <option value={120}>2 giờ</option>
+                      <option value={360}>6 giờ</option>
+                      <option value={1440}>24 giờ</option>
+                    </select>
+                  </div>
+
+                  {qualitySummary.modelQuality?.sentiment && (
+                    <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-3 text-emerald-900">
+                      <p className="font-semibold">Chất lượng phân tích cảm xúc khách hàng</p>
+                      <p>
+                        Gemini AI: {qualitySummary.modelQuality.sentiment.geminiEnabled ? 'Đang bật' : 'Đang tắt'} · Thành công{' '}
+                        {Math.round(Number(qualitySummary.modelQuality.sentiment.ratios?.geminiSuccessRatio || 0) * 100)}% · Dự phòng{' '}
+                        {Math.round(Number(qualitySummary.modelQuality.sentiment.ratios?.fallbackRatio || 0) * 100)}%
+                      </p>
+                    </div>
+                  )}
+
+                  {fallbackRows.length > 0 && (
+                    <div className="rounded-xl border border-amber-100 bg-white/90 p-3">
+                      <p className="mb-2 font-semibold text-slate-800">Tỉ lệ dùng phương án dự phòng theo chức năng</p>
+                      <div className="space-y-1">
+                        {fallbackRows.map((row) => (
+                          <p key={row.endpoint}>
+                            {describeEndpoint(row.endpoint)}: <span className="font-semibold">{Math.round(row.fallbackRatio * 100)}%</span>
+                            {' '}({row.fallbackResponses}/{row.totalResponses} lần)
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {fallbackSummaryRows.length > 0 && (
+                    <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 p-3">
+                      <p className="mb-2 font-semibold text-indigo-900">Xu hướng theo thời gian</p>
+                      <div className="space-y-1 text-indigo-900">
+                        {fallbackSummaryRows.slice(0, 8).map((item) => (
+                          <p key={`summary-${item.endpoint}`}>
+                            {describeEndpoint(item.endpoint)}: {Math.round(item.latestFallbackRatio * 100)}% (tb {Math.round(item.avgFallbackRatio * 100)}%)
+                            {' '}· xu hướng {item.trend === 'flat' ? 'ổn định' : item.trend} ({item.deltaRatio >= 0 ? '+' : ''}{Math.round(item.deltaRatio * 100)}%)
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {fallbackPriorityRows.length > 0 && (
+                    <div className="rounded-xl border border-rose-200 bg-rose-50 p-3">
+                      <p className="mb-2 font-semibold text-rose-900">Ưu tiên xử lý</p>
+                      <div className="space-y-1 text-rose-900">
+                        {fallbackPriorityRows.map((item) => (
+                          <p key={`priority-${item.endpoint}`}>
+                            [{item.priority}] {describeEndpoint(item.endpoint)}: {Math.round(item.latestFallbackRatio * 100)}% dùng phương án dự phòng
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {fallbackTrendPivot.length > 0 && (
+                    <div className="rounded-xl border border-sky-100 bg-sky-50/40 p-3">
+                      <p className="mb-2 font-semibold text-slate-800">Biểu đồ xu hướng ({fallbackTrendWindowMinutes} phút gần nhất)</p>
+                      <div className="h-56">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={fallbackTrendPivot}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                            <XAxis dataKey="time" tick={{ fontSize: 12 }} />
+                            <YAxis tick={{ fontSize: 12 }} domain={[0, 100]} />
+                            <Tooltip />
+                            <Legend />
+                            {selectedFallbackEndpoints.map((endpoint, idx) => (
+                              <Line
+                                key={endpoint}
+                                type="monotone"
+                                dataKey={endpoint}
+                                name={describeEndpoint(endpoint)}
+                                stroke={['#0284c7', '#f59e0b', '#ef4444', '#16a34a'][idx % 4]}
+                                strokeWidth={2}
+                                dot={false}
+                              />
+                            ))}
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </details>
             </div>
-          </div>
-        )}
+          )
+        })()}
+      </Card>
+
+      <Card title="Kết nối cập nhật trực tiếp" subtitle="Theo dõi tốc độ đồng bộ dữ liệu theo thời gian thực">
+        {!realtimeTelemetry && <p className="text-sm text-slate-500">Chưa có dữ liệu telemetry.</p>}
+        {realtimeTelemetry && (() => {
+          const hasAlert = realtimeTelemetry.alerts.p95LagHigh || realtimeTelemetry.alerts.subscriberDropHigh || realtimeTelemetry.alerts.disconnectRateHigh
+
+          return (
+            <div className="space-y-3">
+              <div
+                className={`rounded-xl border px-4 py-3 text-sm ${
+                  hasAlert
+                    ? 'border-rose-200 bg-rose-50 text-rose-900'
+                    : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                }`}
+              >
+                <p className="font-semibold">
+                  {hasAlert
+                    ? 'Kết nối đang chậm, dữ liệu có thể cập nhật trễ hơn bình thường'
+                    : 'Kết nối ổn định, dữ liệu đang cập nhật theo thời gian thực'}
+                </p>
+              </div>
+
+              <details className="rounded-xl border border-slate-200 bg-slate-50/60 p-3 text-xs text-slate-600">
+                <summary className="cursor-pointer select-none font-semibold text-slate-700">
+                  Xem chi tiết kỹ thuật (dành cho quản trị viên)
+                </summary>
+                <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-3">
+                    <p className="text-slate-600">Số người đang xem trực tiếp</p>
+                    <p className="text-lg font-semibold text-slate-900">{realtimeTelemetry.subscribers}</p>
+                    <p className="text-slate-500">Cao nhất: {realtimeTelemetry.peakSubscribers}</p>
+                  </div>
+                  <div className="rounded-xl border border-amber-100 bg-amber-50/60 p-3">
+                    <p className="text-slate-600">Độ trễ (p95)</p>
+                    <p className={`text-lg font-semibold ${realtimeTelemetry.alerts.p95LagHigh ? 'text-rose-700' : 'text-slate-900'}`}>
+                      {Math.round(realtimeTelemetry.lag.p95Ms)} ms
+                    </p>
+                    <p className="text-slate-500">Số mẫu đo: {realtimeTelemetry.lag.samples}</p>
+                  </div>
+                  <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3">
+                    <p className="text-slate-600">Số lần rớt kết nối</p>
+                    <p className={`text-lg font-semibold ${realtimeTelemetry.alerts.subscriberDropHigh ? 'text-rose-700' : 'text-slate-900'}`}>
+                      {realtimeTelemetry.subscriberDrops}
+                    </p>
+                    <p className="text-slate-500">Tổng kết nối: {realtimeTelemetry.connections}</p>
+                  </div>
+                  <div className="rounded-xl border border-rose-100 bg-rose-50/60 p-3">
+                    <p className="text-slate-600">Tỉ lệ ngắt kết nối</p>
+                    <p className={`text-lg font-semibold ${realtimeTelemetry.alerts.disconnectRateHigh ? 'text-rose-700' : 'text-slate-900'}`}>
+                      {Math.round(realtimeTelemetry.disconnectRate * 100)}%
+                    </p>
+                    <p className="text-slate-500">Số lần ngắt: {realtimeTelemetry.disconnects}</p>
+                  </div>
+                </div>
+              </details>
+            </div>
+          )
+        })()}
       </Card>
 
       {recommendAbSummary && (

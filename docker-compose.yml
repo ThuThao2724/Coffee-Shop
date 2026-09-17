@@ -371,6 +371,8 @@ services:
       - "3010"
     environment:
       REPORT_DATABASE_URL: ${REPORT_DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/reportdb?schema=public}
+      ORDER_DATABASE_URL: ${ORDER_DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/orderdb?schema=public}
+      PAYMENT_DATABASE_URL: ${PAYMENT_DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/paymentdb?schema=public}
       AI_MODEL_REGISTRY_URL: ${AI_MODEL_REGISTRY_URL:-http://mlflow:5000}
       AI_LLM_PROVIDER: ${AI_LLM_PROVIDER:-openai}
       AI_LLM_API_KEY: ${AI_LLM_API_KEY:-}
