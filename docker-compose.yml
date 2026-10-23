@@ -381,6 +381,9 @@ services:
       AI_ROLLOUT_PERCENT: ${AI_ROLLOUT_PERCENT:-10}
       AI_ACTIVE_MODEL_VERSION: ${AI_ACTIVE_MODEL_VERSION:-baseline_v1}
       AI_STAGING_MODEL_VERSION: ${AI_STAGING_MODEL_VERSION:-baseline_v2_candidate}
+      AI_SENTIMENT_GEMINI_API_KEY: ${AI_SENTIMENT_GEMINI_API_KEY:-}
+      AI_SENTIMENT_GEMINI_MODEL: ${AI_SENTIMENT_GEMINI_MODEL:-gemini-1.5-flash}
+      AI_SENTIMENT_GEMINI_TIMEOUT_MS: ${AI_SENTIMENT_GEMINI_TIMEOUT_MS:-2500}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3010/api/ai/health').read()"]
       interval: 10s

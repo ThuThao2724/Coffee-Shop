@@ -1,4 +1,5 @@
-﻿import { useEffect, useMemo, useState } from 'react'
+import ForecastDayDetail from '../components/ForecastDayDetail'
+import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import {
   Bar,
@@ -529,7 +530,7 @@ export default function Reports() {
   const revenueForecastChartData = useMemo(
     () =>
       aiInsight.forecasts.map((item) => ({
-        date: formatPeriodLabel(item.date),
+        date: String(item.date).slice(0, 10),
         forecast: Number(item.predictedRevenue || 0),
         low: Number(item.confidenceLow || 0),
         high: Number(item.confidenceHigh || 0),
@@ -803,20 +804,7 @@ export default function Reports() {
               </div>
             </div>
             {revenueForecastChartData.length > 0 && (
-              <div className="h-64 rounded-xl border border-sky-100 bg-white/90 p-3">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={revenueForecastChartData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                    <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 12 }} tickFormatter={(value) => `${Math.round(Number(value) / 1000000)}tr`} />
-                    <Tooltip formatter={(value) => formatMoney(Number(value || 0))} />
-                    <Legend />
-                    <Line type="monotone" dataKey="forecast" name="Dự báo" stroke="#0284c7" strokeWidth={3} dot />
-                    <Line type="monotone" dataKey="low" name="Tin cậy thấp" stroke="#94a3b8" strokeDasharray="4 4" dot={false} />
-                    <Line type="monotone" dataKey="high" name="Tin cậy cao" stroke="#64748b" strokeDasharray="4 4" dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
+              <ForecastDayDetail data={revenueForecastChartData} branchId={effectiveAiBranchId} />
             )}
             {aiInsight.anomalies.filter((item) => !item.isResolved).length > 0 && (
               <div className="rounded-xl border border-amber-100 bg-amber-50/70 p-3">

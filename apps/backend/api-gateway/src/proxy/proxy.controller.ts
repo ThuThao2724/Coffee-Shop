@@ -1,4 +1,4 @@
-import { All, BadRequestException, Controller, ForbiddenException, Get, Logger, Req, Res, UnauthorizedException } from '@nestjs/common';
+﻿import { All, BadRequestException, Controller, ForbiddenException, Get, Logger, Req, Res, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { SERVICE_ROUTES } from './interfaces/service-route.interface';
@@ -28,7 +28,7 @@ export class ProxyController {
       pathRewrite: (path) => (path.startsWith('/api/v1/') ? path : path.replace(/^\/api/, '/api/v1')),
     });
 
-    // Tạo proxy middleware cho mỗi service route
+    // Táº¡o proxy middleware cho má»—i service route
     for (const route of SERVICE_ROUTES) {
       const target = this.resolveRouteTarget(route.path);
       const pathRewrite =
@@ -45,12 +45,12 @@ export class ProxyController {
       const proxy = createProxyMiddleware({
         target,
         changeOrigin: true,
-        proxyTimeout: route.path === '/api/ai' ? 2000 : undefined,
-        timeout: route.path === '/api/ai' ? 2000 : undefined,
+        proxyTimeout: route.path === '/api/ai' ? 45000 : undefined,
+        timeout: route.path === '/api/ai' ? 45000 : undefined,
         // Keep /api/v1/payments for normal payment APIs, but bridge webhook to compat endpoint.
         pathRewrite,
         onError: (err, req, res: any) => {
-          this.logger.error(`Proxy error → ${target}: ${err.message}`);
+          this.logger.error(`Proxy error â†’ ${target}: ${err.message}`);
           if (!res.headersSent) {
             res.status(502).json({ message: 'Service unavailable' });
           }
@@ -671,3 +671,4 @@ export class ProxyController {
     req.headers.authorization = `Bearer ${queryToken}`;
   }
 }
+

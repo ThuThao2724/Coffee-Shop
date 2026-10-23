@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import hashlib
 import math
 import os
@@ -27,9 +27,9 @@ PREDICTION_ERROR_GAUGE = Gauge("ai_prediction_error_mape", "Latest prediction er
 DATA_FRESHNESS_MINUTES = Gauge("ai_data_freshness_minutes", "Latest data freshness in minutes")
 SENTIMENT_SOURCE_COUNT = Counter("ai_sentiment_source_total", "Sentiment source usage", ["source", "status"])
 
-REPORT_DATABASE_URL = os.getenv("REPORT_DATABASE_URL", "").strip()
-ORDER_DATABASE_URL = os.getenv("ORDER_DATABASE_URL", "").strip()
-PAYMENT_DATABASE_URL = os.getenv("PAYMENT_DATABASE_URL", "").strip()
+REPORT_DATABASE_URL = os.getenv("REPORT_DATABASE_URL", "").strip().split("?")[0]
+ORDER_DATABASE_URL = os.getenv("ORDER_DATABASE_URL", "").strip().split("?")[0]
+PAYMENT_DATABASE_URL = os.getenv("PAYMENT_DATABASE_URL", "").strip().split("?")[0]
 CHATBOT_SQL_TIMEOUT_MS = int(os.getenv("AI_CHATBOT_SQL_TIMEOUT_MS", "2000"))
 CHATBOT_MAX_ROWS = int(os.getenv("AI_CHATBOT_MAX_ROWS", "200"))
 AI_ROLLOUT_PERCENT = int(os.getenv("AI_ROLLOUT_PERCENT", "10"))
@@ -50,10 +50,10 @@ AI_SENTIMENT_GEMINI_TIMEOUT_MS = int(os.getenv("AI_SENTIMENT_GEMINI_TIMEOUT_MS",
 AI_SENTIMENT_QUALITY_LOOKBACK_HOURS = int(os.getenv("AI_SENTIMENT_QUALITY_LOOKBACK_HOURS", "24"))
 
 DEFAULT_MENU_KB = [
-    {"keyword": "cà phê", "answer": "Nhóm cà phê đang có các món truyền thống, latte, cappuccino và espresso."},
-    {"keyword": "trà", "answer": "Nhóm trà có nhiều lựa chọn trái cây và trà sữa theo chi nhánh."},
-    {"keyword": "giờ mở cửa", "answer": "Quán mở cửa từ 07:00 đến 22:00 hàng ngày."},
-    {"keyword": "khuyến mãi", "answer": "Bạn có thể xem khuyến mãi đang chạy ở mục Khuyến mãi theo chi nhánh."},
+    {"keyword": "cÃ  phÃª", "answer": "NhÃ³m cÃ  phÃª Ä‘ang cÃ³ cÃ¡c mÃ³n truyá»n thá»‘ng, latte, cappuccino vÃ  espresso."},
+    {"keyword": "trÃ ", "answer": "NhÃ³m trÃ  cÃ³ nhiá»u lá»±a chá»n trÃ¡i cÃ¢y vÃ  trÃ  sá»¯a theo chi nhÃ¡nh."},
+    {"keyword": "giá» má»Ÿ cá»­a", "answer": "QuÃ¡n má»Ÿ cá»­a tá»« 07:00 Ä‘áº¿n 22:00 hÃ ng ngÃ y."},
+    {"keyword": "khuyáº¿n mÃ£i", "answer": "Báº¡n cÃ³ thá»ƒ xem khuyáº¿n mÃ£i Ä‘ang cháº¡y á»Ÿ má»¥c Khuyáº¿n mÃ£i theo chi nhÃ¡nh."},
 ]
 
 POSITIVE_WORD_WEIGHTS: dict[str, float] = {
@@ -833,10 +833,10 @@ def get_cooccurrence_items(branch_id: str, cart_item_ids: list[str], limit: int)
 
 def normalize_text_for_sentiment(text: str) -> str:
     value = str(text or "").lower()
-    value = value.replace("không", "khong").replace("hài lòng", "hailong")
-    value = value.replace("thái độ", "thai_do").replace("hết món", "het_mon")
-    value = value.replace("chờ lâu", "cho_lau").replace("khó phục vụ", "khophucvu")
-    value = re.sub(r"[^a-z0-9À-ỹà-ỹ_\s]", " ", value)
+    value = value.replace("khÃ´ng", "khong").replace("hÃ i lÃ²ng", "hailong")
+    value = value.replace("thÃ¡i Ä‘á»™", "thai_do").replace("háº¿t mÃ³n", "het_mon")
+    value = value.replace("chá» lÃ¢u", "cho_lau").replace("khÃ³ phá»¥c vá»¥", "khophucvu")
+    value = re.sub(r"[^a-z0-9Ã€-á»¹Ã -á»¹_\s]", " ", value)
     value = re.sub(r"\s+", " ", value).strip()
     return value
 
@@ -1064,47 +1064,27 @@ def std_dev(values: list[float], mean_value: float) -> float:
 
 
 def historical_daily_revenue(branch_id: str, lookback_days: int = 90) -> list[dict[str, Any]]:
-    if not ORDER_DATABASE_URL or not PAYMENT_DATABASE_URL:
+    if not ORDER_DATABASE_URL:
         return []
     try:
-        order_rows = execute_sql_with_url(
+        rows = execute_sql_with_url(
             ORDER_DATABASE_URL,
             """
-            SELECT id
+            SELECT DATE(o."createdAt") AS date,
+                   COALESCE(SUM(o."totalAmount"), 0) AS revenue
             FROM orders o
             WHERE o."branchId" = %s
+              AND o.status::text = 'COMPLETED'
               AND o."createdAt" >= (CURRENT_DATE - (%s::int || ' days')::interval)
+            GROUP BY DATE(o."createdAt")
+            ORDER BY DATE(o."createdAt") ASC
             """,
             [branch_id, max(7, min(lookback_days, 365))],
         )
-        order_ids = [str(row.get("id") or "").strip() for row in order_rows if str(row.get("id") or "").strip()]
-        if not order_ids:
-            return []
-
-        revenue_by_date: dict[str, float] = {}
-        for idx in range(0, len(order_ids), 500):
-            chunk = order_ids[idx : idx + 500]
-            placeholders = ",".join(["%s"] * len(chunk))
-            payment_rows = execute_sql_with_url(
-                PAYMENT_DATABASE_URL,
-                f"""
-                SELECT DATE(COALESCE(p."paidAt", p."createdAt")) AS date,
-                       COALESCE(SUM(p.amount), 0) AS revenue
-                FROM payments p
-                WHERE p.status = 'PAID'
-                  AND p."orderId" IN ({placeholders})
-                GROUP BY DATE(COALESCE(p."paidAt", p."createdAt"))
-                ORDER BY DATE(COALESCE(p."paidAt", p."createdAt")) ASC
-                """,
-                chunk,
-            )
-            for row in payment_rows:
-                key = str(row.get("date") or "")[:10]
-                if not key:
-                    continue
-                revenue_by_date[key] = revenue_by_date.get(key, 0.0) + decimal_from_any(row.get("revenue"), 0.0)
-
-        return [{"date": date, "revenue": revenue_by_date[date]} for date in sorted(revenue_by_date)]
+        return [
+            {"date": str(r.get("date"))[:10], "revenue": decimal_from_any(r.get("revenue"), 0.0)}
+            for r in rows
+        ]
     except Exception:
         return []
 
@@ -1249,6 +1229,279 @@ def build_revenue_forecast_from_history(branch_id: str, days: int) -> tuple[list
     except Exception as exc:
         return fallback_forecast(f"prophet-error:{type(exc).__name__}")
 
+# --- Top products by session (morning / noon / evening) ---
+TOP_PRODUCT_SESSIONS = [
+    ("morning", 6, 11),
+    ("noon", 11, 17),
+    ("evening", 17, 23),
+]
+SOLD_ORDER_STATUSES = ["COMPLETED"]
+
+
+def build_top_products_by_session(
+    branch_id: str, target_date: str, weeks: int = 8, limit: int = 5
+) -> dict[str, Any]:
+    target = datetime.strptime(target_date, "%Y-%m-%d").date()
+    same_weekday_dates = [target - timedelta(days=7 * k) for k in range(1, weeks + 1)]
+
+    filtered_sql = """
+        (
+            SELECT o.id,
+                   o."createdAt" AS ts
+            FROM orders o
+            WHERE o."branchId" = %s
+              AND o.status::text = ANY(%s)
+        ) f
+    """
+    params = [branch_id, SOLD_ORDER_STATUSES, same_weekday_dates]
+
+    days_rows = execute_sql_with_url(
+        ORDER_DATABASE_URL,
+        "SELECT COUNT(DISTINCT f.ts::date)::int AS days FROM " + filtered_sql
+        + " WHERE f.ts::date = ANY(%s::date[])",
+        params,
+    )
+    days_used = int((days_rows[0].get("days") if days_rows else 0) or 0)
+
+    by_session: dict[str, list[dict[str, Any]]] = {k: [] for k, _, _ in TOP_PRODUCT_SESSIONS}
+
+    if days_used > 0:
+        rows = execute_sql_with_url(
+            ORDER_DATABASE_URL,
+            """
+            SELECT s.session, s.id, s.name, s.total_qty
+            FROM (
+                SELECT
+                    CASE
+                        WHEN EXTRACT(HOUR FROM f.ts) >= 6  AND EXTRACT(HOUR FROM f.ts) < 11 THEN 'morning'
+                        WHEN EXTRACT(HOUR FROM f.ts) >= 11 AND EXTRACT(HOUR FROM f.ts) < 17 THEN 'noon'
+                        WHEN EXTRACT(HOUR FROM f.ts) >= 17 AND EXTRACT(HOUR FROM f.ts) < 23 THEN 'evening'
+                    END AS session,
+                    oi."menuItemId" AS id,
+                    COALESCE(mi.name, oi."menuItemId") AS name,
+                    SUM(oi.quantity)::int AS total_qty
+                FROM """
+            + filtered_sql
+            + """
+                JOIN order_items oi ON oi."orderId" = f.id
+                LEFT JOIN menu_items mi ON mi.id = oi."menuItemId"
+                WHERE f.ts::date = ANY(%s::date[])
+                GROUP BY 1, oi."menuItemId", mi.name
+            ) s
+            WHERE s.session IS NOT NULL
+            ORDER BY s.session, s.total_qty DESC
+            """,
+            params,
+        )
+        for row in rows:
+            key = row.get("session")
+            if key not in by_session:
+                continue
+            avg_qty = float(row.get("total_qty") or 0) / days_used
+            by_session[key].append(
+                {"id": str(row.get("id")), "name": str(row.get("name")), "qty": max(1, round(avg_qty))}
+            )
+
+    sessions = []
+    for key, start, end in TOP_PRODUCT_SESSIONS:
+        items = by_session[key]
+        sessions.append(
+            {
+                "key": key,
+                "start": start,
+                "end": end,
+                "topProducts": items[:limit],
+                "totalQty": sum(i["qty"] for i in items),
+            }
+        )
+    return {"branchId": branch_id, "date": target_date, "daysUsed": days_used, "sessions": sessions}
+
+
+@app.get("/api/ai/forecast/top-products")
+@app.get("/forecast/top-products")
+def forecast_top_products(branchId: str, date: str, weeks: int = 8, limit: int = 5):
+    if not ORDER_DATABASE_URL:
+        raise HTTPException(status_code=503, detail="ORDER_DATABASE_URL is not configured")
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    return build_top_products_by_session(
+        branchId, date, max(2, min(weeks, 26)), max(1, min(limit, 10))
+    )
+
+
+@app.get("/api/ai/forecast/hourly-profile")
+def forecast_hourly_profile(branchId: str, weeks: int = 12):
+    if not ORDER_DATABASE_URL:
+        raise HTTPException(status_code=503, detail="ORDER_DATABASE_URL is not configured")
+    days = max(1, min(weeks, 26)) * 7
+    rows = execute_sql_with_url(
+        ORDER_DATABASE_URL,
+        """
+        SELECT t.dow, t.h, t.revenue, t.orders, d.days
+        FROM (
+            SELECT EXTRACT(DOW FROM o."createdAt")::int AS dow,
+                   EXTRACT(HOUR FROM o."createdAt")::int AS h,
+                   COALESCE(SUM(o."totalAmount"), 0)::bigint AS revenue,
+                   COUNT(*)::int AS orders
+            FROM orders o
+            WHERE o."branchId" = %s AND o.status::text = 'COMPLETED'
+              AND o."createdAt" >= (CURRENT_DATE - (%s::int || ' days')::interval)
+              AND EXTRACT(HOUR FROM o."createdAt") BETWEEN 6 AND 22
+            GROUP BY 1, 2
+        ) t
+        JOIN (
+            SELECT EXTRACT(DOW FROM o."createdAt")::int AS dow,
+                   COUNT(DISTINCT o."createdAt"::date)::int AS days
+            FROM orders o
+            WHERE o."branchId" = %s AND o.status::text = 'COMPLETED'
+              AND o."createdAt" >= (CURRENT_DATE - (%s::int || ' days')::interval)
+            GROUP BY 1
+        ) d ON d.dow = t.dow
+        ORDER BY t.dow, t.h
+        """,
+        [branchId, days, branchId, days],
+    )
+    return {
+        "branchId": branchId,
+        "weeks": days // 7,
+        "profile": [
+            {"dow": int(r["dow"]), "h": int(r["h"]), "revenue": float(r["revenue"]),
+             "orders": int(r["orders"]), "days": int(r["days"])}
+            for r in rows
+        ],
+    }
+
+
+@app.get("/api/ai/forecast/weather")
+def forecast_weather(branchId: str, lat: float = 10.78, lon: float = 106.70, rainMm: float = 1.0):
+    cache_key = f"{branchId}|{lat}|{lon}|{rainMm}"
+    hit = WEATHER_CACHE.get(cache_key)
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    result = _forecast_weather_impl(branchId, lat, lon, rainMm)
+    WEATHER_CACHE[cache_key] = (time.time(), result)
+    return result
+
+
+WEATHER_CACHE: dict = {}
+
+
+def _forecast_weather_impl(branchId: str, lat: float, lon: float, rainMm: float):
+    import json as _json
+    import urllib.error
+
+    def fetch(url: str) -> dict:
+        with urlrequest.urlopen(url, timeout=10) as resp:
+            return _json.loads(resp.read().decode("utf-8"))
+
+    def to_map(payload: dict) -> dict:
+        d = payload.get("daily") or {}
+        times = d.get("time") or []
+        mm = d.get("precipitation_sum") or []
+        pr = d.get("precipitation_probability_max") or []
+        out = {}
+        for i, day_s in enumerate(times):
+            out[day_s] = {
+                "mm": mm[i] if i < len(mm) else None,
+                "prob": pr[i] if i < len(pr) else None,
+            }
+        return out
+
+    rows = execute_sql_with_url(
+        ORDER_DATABASE_URL,
+        """
+        SELECT DATE(o."createdAt") AS date, COALESCE(SUM(o."totalAmount"), 0) AS revenue
+        FROM orders o
+        WHERE o."branchId" = %s AND o.status::text = 'COMPLETED'
+          AND left(o.id, 6) <> 'seedo_'
+        GROUP BY DATE(o."createdAt")
+        ORDER BY DATE(o."createdAt")
+        """,
+        [branchId],
+    )
+    hist = [(str(r["date"])[:10], float(r["revenue"])) for r in rows if str(r["date"])[:10] >= "2026-06-01"]
+
+    now = datetime.now(timezone(timedelta(hours=7)))
+    from urllib.parse import urlencode
+    common = {"latitude": lat, "longitude": lon, "timezone": "auto"}
+    try:
+        wx: dict = {}
+        if hist:
+            end = (now - timedelta(days=4)).date().isoformat()
+            if hist[0][0] <= end:
+                q = urlencode({**common, "daily": "precipitation_sum", "start_date": hist[0][0], "end_date": end})
+                wx.update(to_map(fetch("https://archive-api.open-meteo.com/v1/archive?" + q)))
+        q = urlencode({
+            **common,
+            "daily": "precipitation_sum,precipitation_probability_max",
+            "past_days": 7,
+            "forecast_days": 10,
+        })
+        fc = to_map(fetch("https://api.open-meteo.com/v1/forecast?" + q))
+        for k, v in fc.items():
+            if v["mm"] is not None:
+                wx[k] = v
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8")[:200]
+        except Exception:
+            pass
+        raise HTTPException(status_code=502, detail=f"Open-Meteo {exc.code}: {body}")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Khong lay duoc thoi tiet: {type(exc).__name__}: {exc}")
+
+    by_dow: dict = {}
+    for d, rev in hist:
+        by_dow.setdefault(datetime.strptime(d, "%Y-%m-%d").weekday(), []).append(rev)
+    mean_dow = {k: sum(v) / len(v) for k, v in by_dow.items()}
+
+    rain_r, dry_r, rain_rev, dry_rev = [], [], [], []
+    for d, rev in hist:
+        w = wx.get(d)
+        if not w or w["mm"] is None:
+            continue
+        m = mean_dow.get(datetime.strptime(d, "%Y-%m-%d").weekday()) or 0
+        if m <= 0:
+            continue
+        if w["mm"] >= rainMm:
+            rain_r.append(rev / m)
+            rain_rev.append(rev)
+        else:
+            dry_r.append(rev / m)
+            dry_rev.append(rev)
+
+    def avg(a):
+        return round(sum(a) / len(a), 3) if a else None
+
+    start_show = (now - timedelta(days=7)).date().isoformat()
+    days = [
+        {
+            "date": k,
+            "mm": v["mm"],
+            "prob": v["prob"],
+            "isRain": (v["mm"] >= rainMm) if v["mm"] is not None else None,
+        }
+        for k, v in sorted(fc.items())
+        if k >= start_show
+    ]
+    return {
+        "branchId": branchId,
+        "days": days,
+        "stats": {
+            "rainyDays": len(rain_r),
+            "dryDays": len(dry_r),
+            "rainFactor": avg(rain_r),
+            "dryFactor": avg(dry_r),
+            "avgRainRevenue": round(sum(rain_rev) / len(rain_rev)) if rain_rev else None,
+            "avgDryRevenue": round(sum(dry_rev) / len(dry_rev)) if dry_rev else None,
+            "reliable": len(rain_r) >= 5 and len(dry_r) >= 5,
+        },
+    }
+
+
 def top_negative_issues(texts: list[str], limit: int = 3) -> list[dict[str, Any]]:
     topic_counts: dict[str, int] = {key: 0 for key in ISSUE_TOPIC_KEYWORDS.keys()}
     fallback_token_counts: dict[str, int] = {}
@@ -1319,16 +1572,16 @@ def map_question_to_sql(question: str, branch_id: str | None) -> str:
     q = question.lower()
     where = 'WHERE "branchId" = %s' if branch_id else ""
 
-    if "doanh thu" in q and ("hôm nay" in q or "hom nay" in q):
+    if "doanh thu" in q and ("hÃ´m nay" in q or "hom nay" in q):
         return (
             f'SELECT COALESCE(SUM("predictedRevenue"), 0) AS revenue FROM sales_forecast {where} '
             f'{"AND" if where else "WHERE"} "forecastDate"::date = CURRENT_DATE'
         )
-    if "món" in q and ("bán chạy" in q or "ban chay" in q):
+    if "mÃ³n" in q and ("bÃ¡n cháº¡y" in q or "ban chay" in q):
         return f'SELECT "menuItemId", SUM(quantity)::int AS qty FROM item_sales {where} GROUP BY "menuItemId" ORDER BY qty DESC LIMIT 10'
-    if "bất thường" in q or "canh bao" in q or "cảnh báo" in q:
+    if "báº¥t thÆ°á»ng" in q or "canh bao" in q or "cáº£nh bÃ¡o" in q:
         return f'SELECT id, "alertType", severity, description, "isResolved", "detectedAt" FROM anomaly_alert {where} ORDER BY "detectedAt" DESC LIMIT 20'
-    if "cảm xúc" in q or "cam xuc" in q or "sentiment" in q:
+    if "cáº£m xÃºc" in q or "cam xuc" in q or "sentiment" in q:
         return f'SELECT label, COUNT(*)::int AS count FROM sentiment_analysis {where} GROUP BY label ORDER BY label'
 
     return f'SELECT "forecastDate", "predictedRevenue", "confidenceLow", "confidenceHigh" FROM sales_forecast {where} ORDER BY "forecastDate" DESC LIMIT 7'
@@ -1338,30 +1591,30 @@ def infer_report_intent(question: str) -> str:
     q = question.lower()
     if "doanh thu" in q:
         return "REVENUE_QUERY"
-    if "món" in q and ("bán chạy" in q or "ban chay" in q):
+    if "mÃ³n" in q and ("bÃ¡n cháº¡y" in q or "ban chay" in q):
         return "TOP_ITEMS_QUERY"
-    if "bất thường" in q or "cảnh báo" in q or "canh bao" in q:
+    if "báº¥t thÆ°á»ng" in q or "cáº£nh bÃ¡o" in q or "canh bao" in q:
         return "ANOMALY_QUERY"
-    if "cảm xúc" in q or "sentiment" in q or "cam xuc" in q:
+    if "cáº£m xÃºc" in q or "sentiment" in q or "cam xuc" in q:
         return "SENTIMENT_QUERY"
     return "GENERAL_QUERY"
 
 
 def summarize_sql_result(intent: str, rows: list[dict[str, Any]]) -> str:
     if not rows:
-        return "Không tìm thấy dữ liệu phù hợp trong phạm vi câu hỏi."
+        return "KhÃ´ng tÃ¬m tháº¥y dá»¯ liá»‡u phÃ¹ há»£p trong pháº¡m vi cÃ¢u há»i."
     if intent == "REVENUE_QUERY":
         revenue = decimal_from_any(rows[0].get("revenue"), 0)
-        return f"Doanh thu ước tính theo dữ liệu hiện có là {int(revenue):,}đ."
+        return f"Doanh thu Æ°á»›c tÃ­nh theo dá»¯ liá»‡u hiá»‡n cÃ³ lÃ  {int(revenue):,}Ä‘."
     if intent == "TOP_ITEMS_QUERY":
         top = rows[0]
-        return f"Món dẫn đầu hiện tại là {top.get('menuItemId', 'N/A')} với số lượng {top.get('qty', 0)}."
+        return f"MÃ³n dáº«n Ä‘áº§u hiá»‡n táº¡i lÃ  {top.get('menuItemId', 'N/A')} vá»›i sá»‘ lÆ°á»£ng {top.get('qty', 0)}."
     if intent == "ANOMALY_QUERY":
-        return f"Có {len(rows)} cảnh báo bất thường gần nhất trong phạm vi truy vấn."
+        return f"CÃ³ {len(rows)} cáº£nh bÃ¡o báº¥t thÆ°á»ng gáº§n nháº¥t trong pháº¡m vi truy váº¥n."
     if intent == "SENTIMENT_QUERY":
         parts = [f"{row.get('label', 'UNKNOWN')}: {row.get('count', 0)}" for row in rows[:3]]
-        return "Phân bổ cảm xúc hiện tại: " + ", ".join(parts)
-    return f"Tìm thấy {len(rows)} dòng dữ liệu."
+        return "PhÃ¢n bá»• cáº£m xÃºc hiá»‡n táº¡i: " + ", ".join(parts)
+    return f"TÃ¬m tháº¥y {len(rows)} dÃ²ng dá»¯ liá»‡u."
 
 
 def answer_from_knowledge_base(question: str) -> tuple[str, str, float, bool]:
@@ -1370,11 +1623,11 @@ def answer_from_knowledge_base(question: str) -> tuple[str, str, float, bool]:
         if item["keyword"] in lowered:
             return item["answer"], "FAQ", 0.91, False
 
-    order_tokens = ["đặt", "order", "mua", "thêm vào giỏ"]
+    order_tokens = ["Ä‘áº·t", "order", "mua", "thÃªm vÃ o giá»"]
     if any(token in lowered for token in order_tokens):
-        return "Mình đã ghi nhận yêu cầu đặt món. Nhân viên sẽ xác nhận lại ngay.", "ORDER", 0.74, False
+        return "MÃ¬nh Ä‘Ã£ ghi nháº­n yÃªu cáº§u Ä‘áº·t mÃ³n. NhÃ¢n viÃªn sáº½ xÃ¡c nháº­n láº¡i ngay.", "ORDER", 0.74, False
 
-    return "Mình chưa chắc câu trả lời. Mình sẽ chuyển yêu cầu này cho nhân viên để hỗ trợ ngay.", "ESCALATE", 0.41, True
+    return "MÃ¬nh chÆ°a cháº¯c cÃ¢u tráº£ lá»i. MÃ¬nh sáº½ chuyá»ƒn yÃªu cáº§u nÃ y cho nhÃ¢n viÃªn Ä‘á»ƒ há»— trá»£ ngay.", "ESCALATE", 0.41, True
 
 
 def load_anomalies_from_db(branch_id: str, severity: str | None) -> list[dict[str, Any]]:
@@ -2376,7 +2629,7 @@ def ai_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
             params = [payload.branchId] if payload.branchId and "%s" in generated_sql else []
             sql_result = execute_sql(generated_sql, params)
             if sql_result:
-                answer = f"Mình đã lấy dữ liệu sơ bộ ({len(sql_result)} dòng) và đã chuyển nhân viên xử lý chi tiết."
+                answer = f"MÃ¬nh Ä‘Ã£ láº¥y dá»¯ liá»‡u sÆ¡ bá»™ ({len(sql_result)} dÃ²ng) vÃ  Ä‘Ã£ chuyá»ƒn nhÃ¢n viÃªn xá»­ lÃ½ chi tiáº¿t."
                 confidence = 0.58
                 escalated = True
         except Exception as error:  # pylint: disable=broad-except
@@ -2415,7 +2668,7 @@ def ai_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
         "reply": answer,
         "sqlResult": sql_result,
         "isSuccessful": success,
-        "suggestions": ["Doanh thu hôm nay?", "Món bán chạy nhất?", "Khuyến mãi đang chạy?"],
+        "suggestions": ["Doanh thu hÃ´m nay?", "MÃ³n bÃ¡n cháº¡y nháº¥t?", "Khuyáº¿n mÃ£i Ä‘ang cháº¡y?"],
     }
 
 
@@ -2433,8 +2686,139 @@ def ai_chat_history(request: Request, branchId: str | None = None, limit: int = 
 @metric_guard("chat_suggestions")
 def ai_chat_suggestions(request: Request) -> dict[str, Any]:
     authorize_request(request, None, {"ADMIN", "MANAGER"})
-    return {"items": ["Doanh thu hôm nay so với hôm qua?", "Món bán chạy nhất tuần này?", "Có cảnh báo bất thường nào đang mở?", "Tồn kho nguyên liệu nào sắp hết?"]}
+    return {"items": ["Doanh thu hÃ´m nay so vá»›i hÃ´m qua?", "MÃ³n bÃ¡n cháº¡y nháº¥t tuáº§n nÃ y?", "CÃ³ cáº£nh bÃ¡o báº¥t thÆ°á»ng nÃ o Ä‘ang má»Ÿ?", "Tá»“n kho nguyÃªn liá»‡u nÃ o sáº¯p háº¿t?"]}
 
+
+GEMINI_SQL_SCHEMA_CONTEXT = (
+    "Ban la trinh sinh cau lenh PostgreSQL SELECT cho he thong quan ly quan ca phe. "
+    "CHI duoc sinh ra DUY NHAT mot cau lenh SELECT, khong giai thich, khong dung markdown, khong dung dau cham phay o cuoi. "
+    "Cac bang du lieu co san (schema report-service): "
+    'daily_revenue(date date, revenue numeric, "orderCount" int); '
+    'item_sales(id text, date date, "menuItemId" text, quantity int, revenue numeric, "orderCount" int); '
+    'daily_stats(date date, "totalOrders" int, "totalRevenue" numeric, "avgOrderValue" numeric, "topItemMenuId" text); '
+    'sales_forecast(id text, "branchId" text, "forecastDate" date, granularity text, "predictedRevenue" numeric, "confidenceLow" numeric, "confidenceHigh" numeric, confidence numeric, "generatedAt" timestamp); '
+    'anomaly_alert(id text, "branchId" text, "alertType" text, severity text, description text, "isResolved" boolean, "detectedAt" timestamp); '
+    'sentiment_analysis(id text, "branchId" text, "sourceType" text, "originalText" text, label text, confidence numeric, "analyzedAt" timestamp). '
+    "Vi du 1: Cau hoi Doanh thu tuan truoc la bao nhieu thi tra loi SQL la "
+    "SELECT COALESCE(SUM(revenue), 0) AS revenue FROM daily_revenue WHERE date >= date_trunc(\'week\', CURRENT_DATE) - interval \'7 days\' AND date < date_trunc(\'week\', CURRENT_DATE) LIMIT 50. "
+    'Vi du 2: Cau hoi Top 5 mon ban chay nhat thang nay thi tra loi SQL la SELECT "menuItemId", SUM(quantity)::int AS qty FROM item_sales WHERE date >= date_trunc(\'month\', CURRENT_DATE) GROUP BY "menuItemId" ORDER BY qty DESC LIMIT 5. '
+    "Vi du 3: Cau hoi Co bao nhieu canh bao bat thuong chua xu ly thi tra loi SQL la "
+    'SELECT COUNT(*)::int AS count FROM anomaly_alert WHERE "isResolved" = false LIMIT 50. '
+    "Luon them LIMIT toi da 50 neu cau hoi khong yeu cau con so cu the. "
+    "Chi dung SELECT, khong duoc dung INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE. "
+    "Chi tra loi dung mot dong SQL, khong giai thich them."
+)
+
+
+def generate_sql_with_gemini(question, branch_id):
+    if not AI_SENTIMENT_GEMINI_API_KEY:
+        raise RuntimeError("gemini_api_key_missing")
+    endpoint = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        + AI_SENTIMENT_GEMINI_MODEL
+        + ":generateContent?key="
+        + AI_SENTIMENT_GEMINI_API_KEY
+    )
+    branch_hint = (" (branchId hien tai: " + str(branch_id) + ")") if branch_id else ""
+    prompt_parts = [
+        GEMINI_SQL_SCHEMA_CONTEXT,
+        "Cau hoi: " + question + branch_hint,
+        "SQL:",
+    ]
+    prompt = chr(10).join(prompt_parts)
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.0},
+    }
+    req = urlrequest.Request(
+        endpoint,
+        data=json_dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    timeout_sec = max(0.5, AI_SENTIMENT_GEMINI_TIMEOUT_MS / 1000.0)
+    with urlrequest.urlopen(req, timeout=timeout_sec) as response:
+        body = response.read().decode("utf-8", errors="ignore")
+    import json
+    parsed = json.loads(body)
+    text_out = parsed.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+    sql_out = str(text_out or "").strip()
+    fence = chr(96) * 3
+    if sql_out.startswith(fence):
+        sql_out = sql_out.split(chr(10), 1)[-1]
+    if sql_out.endswith(fence):
+        sql_out = sql_out.rsplit(fence, 1)[0]
+    sql_out = sql_out.strip().rstrip(";").strip()
+    return sql_out
+
+
+def validate_generated_sql(sql):
+    if not sql:
+        return None
+    normalized = sql.strip()
+    upper = normalized.upper()
+    if not upper.startswith("SELECT"):
+        return None
+    forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "GRANT", "REVOKE", "--", ";"]
+    if any(word in upper for word in forbidden):
+        return None
+    if "LIMIT" not in upper:
+        normalized = normalized + " LIMIT 50"
+    return normalized
+
+
+def summarize_with_gemini(question, rows):
+    if not AI_SENTIMENT_GEMINI_API_KEY:
+        return None
+    endpoint = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        + AI_SENTIMENT_GEMINI_MODEL
+        + ":generateContent?key="
+        + AI_SENTIMENT_GEMINI_API_KEY
+    )
+    import json as json_mod
+    sample = rows[:20]
+    intro = (
+        "Ban la tro ly bao cao quan ca phe. Dua vao du lieu JSON ket qua truy van, "
+        "tra loi cau hoi bang 1 den 2 cau tieng Viet ngan gon, tu nhien, co so lieu cu the neu co. "
+        "Khong nhac lai cau hoi, khong dung markdown."
+    )
+    prompt_parts = [
+        intro,
+        "Cau hoi: " + question,
+        "Du lieu: " + json_mod.dumps(sample, default=str, ensure_ascii=False),
+    ]
+    prompt = chr(10).join(prompt_parts)
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.2},
+    }
+    req = urlrequest.Request(
+        endpoint,
+        data=json_dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    timeout_sec = max(0.5, AI_SENTIMENT_GEMINI_TIMEOUT_MS / 1000.0)
+    with urlrequest.urlopen(req, timeout=timeout_sec) as response:
+        body = response.read().decode("utf-8", errors="ignore")
+    parsed = json_mod.loads(body)
+    text_out = parsed.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+    result = str(text_out or "").strip()
+    return result or None
+
+
+def is_generic_fallback_question(question):
+    q = question.lower()
+    if "doanh thu" in q and ("hÃ´m nay" in q or "hom nay" in q):
+        return False
+    if "mÃ³n" in q and ("bÃ¡n cháº¡y" in q or "ban chay" in q):
+        return False
+    if "báº¥t thÆ°á»ng" in q or "cáº£nh bÃ¡o" in q or "canh bao" in q:
+        return False
+    if "cáº£m xÃºc" in q or "cam xuc" in q or "sentiment" in q:
+        return False
+    return True
 
 @app.post("/api/ai/report-chat")
 @metric_guard("report_chat")
@@ -2455,18 +2839,35 @@ def report_chat(payload: ReportChatPayload, request: Request) -> dict[str, Any]:
         role = "MANAGER"
     intent = infer_report_intent(sanitized_question)
     sql = map_question_to_sql(sanitized_question, branch_id)
+    sql_source = "rule"
+
+    if is_generic_fallback_question(sanitized_question) and AI_SENTIMENT_GEMINI_API_KEY:
+        try:
+            gemini_sql_raw = generate_sql_with_gemini(sanitized_question, branch_id)
+            gemini_sql = validate_generated_sql(gemini_sql_raw)
+            if gemini_sql:
+                sql = gemini_sql
+                sql_source = "gemini"
+        except Exception:
+            pass
 
     rows: list[dict[str, Any]] = []
     success = True
     error_message = None
     try:
-        params = [branch_id] if branch_id and "%s" in sql else []
+        if sql_source == "gemini":
+            params = []
+        else:
+            params = [branch_id] if branch_id and "%s" in sql else []
         rows = execute_sql(sql, params)
-        answer = summarize_sql_result(intent, rows)
-    except Exception as error:  # pylint: disable=broad-except
+        if sql_source == "gemini":
+            answer = summarize_with_gemini(sanitized_question, rows) or summarize_sql_result(intent, rows)
+        else:
+            answer = summarize_sql_result(intent, rows)
+    except Exception as error:
         success = False
         error_message = str(error)
-        answer = "Không thể thực thi truy vấn báo cáo tại thời điểm này."
+        answer = "Khong the thuc thi truy van bao cao tai thoi diem nay."
 
     execution_ms = int((time.perf_counter() - start) * 1000)
     log_audit(
@@ -2476,7 +2877,7 @@ def report_chat(payload: ReportChatPayload, request: Request) -> dict[str, Any]:
         branch_id,
         actor_id=payload.userId,
         latency_ms=execution_ms,
-        metadata={"intent": intent, "error": error_message, "role": role, "questionPreview": sanitized_question[:120]},
+        metadata={"intent": intent, "error": error_message, "role": role, "questionPreview": sanitized_question[:120], "sqlSource": sql_source},
     )
 
     return {
@@ -2487,4 +2888,9 @@ def report_chat(payload: ReportChatPayload, request: Request) -> dict[str, Any]:
         "isSuccessful": success,
         "rowCount": len(rows),
         "sampleRows": rows[:5],
+        "sqlSource": sql_source,
     }
+
+
+
+
