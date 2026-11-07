@@ -183,7 +183,23 @@ services:
         limits:
           memory: 512m
     build: ./apps/backend/order-service
-    command: sh -c "npx prisma migrate deploy && npx prisma db seed && node dist/src/main.js"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if ! out=$$(npx prisma migrate deploy 2>&1); then
+          echo "$$out"
+          echo "$$out" | grep -q P3005 || exit 1
+          echo "Database has tables but no migration history (created by db push): baselining 0_init"
+          npx prisma db push --skip-generate
+          npx prisma migrate resolve --applied 0_init
+          npx prisma migrate deploy
+        else
+          echo "$$out"
+        fi
+        npx prisma db seed
+        exec node dist/src/main.js
     expose:
       - "3001"
     environment:
@@ -220,7 +236,22 @@ services:
         limits:
           memory: 512m
     build: ./apps/backend/chat-service
-    command: sh -c "npx prisma migrate deploy && node dist/main"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if ! out=$$(npx prisma migrate deploy 2>&1); then
+          echo "$$out"
+          echo "$$out" | grep -q P3005 || exit 1
+          echo "Database has tables but no migration history (created by db push): baselining 0_init"
+          npx prisma db push --skip-generate
+          npx prisma migrate resolve --applied 0_init
+          npx prisma migrate deploy
+        else
+          echo "$$out"
+        fi
+        exec node dist/main
     expose:
       - "3007"
     ports:
@@ -255,7 +286,23 @@ services:
         limits:
           memory: 512m
     build: ./apps/backend/inventory-service
-    command: sh -c "npx prisma migrate deploy && npx prisma db seed && node dist/src/main.js"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if ! out=$$(npx prisma migrate deploy 2>&1); then
+          echo "$$out"
+          echo "$$out" | grep -q P3005 || exit 1
+          echo "Database has tables but no migration history (created by db push): baselining 0_init"
+          npx prisma db push --skip-generate
+          npx prisma migrate resolve --applied 0_init
+          npx prisma migrate deploy
+        else
+          echo "$$out"
+        fi
+        npx prisma db seed
+        exec node dist/src/main.js
     expose:
       - "3005"
     environment:
@@ -292,7 +339,22 @@ services:
         limits:
           memory: 512m
     build: ./apps/backend/payment-service
-    command: sh -c "npx prisma migrate deploy && node dist/src/main.js"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if ! out=$$(npx prisma migrate deploy 2>&1); then
+          echo "$$out"
+          echo "$$out" | grep -q P3005 || exit 1
+          echo "Database has tables but no migration history (created by db push): baselining 0_init"
+          npx prisma db push --skip-generate
+          npx prisma migrate resolve --applied 0_init
+          npx prisma migrate deploy
+        else
+          echo "$$out"
+        fi
+        exec node dist/src/main.js
     expose:
       - "3004"
     environment:
@@ -354,7 +416,22 @@ services:
         limits:
           memory: 512m
     build: ./apps/backend/report-service
-    command: sh -c "npx prisma migrate deploy && node dist/src/main.js"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if ! out=$$(npx prisma migrate deploy 2>&1); then
+          echo "$$out"
+          echo "$$out" | grep -q P3005 || exit 1
+          echo "Database has tables but no migration history (created by db push): baselining 0_init"
+          npx prisma db push --skip-generate
+          npx prisma migrate resolve --applied 0_init
+          npx prisma migrate deploy
+        else
+          echo "$$out"
+        fi
+        exec node dist/src/main.js
     expose:
       - "3006"
     environment:
