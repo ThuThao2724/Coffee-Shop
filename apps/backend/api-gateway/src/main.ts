@@ -5,6 +5,8 @@ import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
+  // Do not advertise the framework (nginx also hides upstream X-Powered-By headers).
+  app.getHttpAdapter().getInstance().disable('x-powered-by');
   const configService = app.get(ConfigService);
   const logger = new Logger('ApiGateway');
   const allowedOriginsRaw = String(configService.get<string>('ALLOWED_ORIGINS', '') || '').trim();
