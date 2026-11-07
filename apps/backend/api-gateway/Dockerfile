@@ -23,5 +23,9 @@ RUN npm config set fetch-retries 5 \
   && npm cache clean --force
 COPY --from=builder /app/dist ./dist
 
+# Run as the unprivileged user shipped with the node image (this service writes nothing to disk).
+# The file logger writes to ./logs: create it for the unprivileged user.
+RUN mkdir -p /app/logs && chown node:node /app/logs
+USER node
 EXPOSE 8080
 CMD ["node", "dist/main"]
