@@ -248,14 +248,14 @@ export default function Dashboard() {
         localStorage.setItem(notifSyncKey, payload.createdAt)
       }
       if (payload.type === 'ORDER_NEW') {
-        loadOverview(false)
+        loadOverview()
       }
     }
 
     const onNotificationBatch = (batch: StaffNotificationPayload[]) => {
       if (!Array.isArray(batch)) return
       batch.forEach((item) => pushNotification(item, 'POLL', false))
-      const latest = batch.at(-1)?.createdAt
+      const latest = batch[batch.length - 1]?.createdAt
       if (typeof window !== 'undefined' && latest) {
         localStorage.setItem(notifSyncKey, latest)
       }

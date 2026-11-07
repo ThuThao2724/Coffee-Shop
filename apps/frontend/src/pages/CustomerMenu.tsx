@@ -192,8 +192,13 @@ interface PaymentStatusResponse {
   orderId: string
   status: 'PENDING' | 'WAITING_TRANSFER' | 'WAITING_CASH' | 'PAID' | 'FAILED' | 'EXPIRED' | 'CANCELLED'
   provider: 'SEPAY' | 'CASH'
+  transactionId?: string | null
   paymentUrl?: string | null
   transferContent?: string | null
+  amount?: number
+  amountReceived?: number | null
+  underpaid?: boolean
+  amountShortfall?: number | null
   vietQr?: {
     qrImageUrl: string
     htmlTag?: string
@@ -664,7 +669,17 @@ function normalizeCategoryLabel(input: unknown): string {
   return map[key] || raw
 }
 
-function inferSelectedOptions(menuItem: MenuItem | undefined, selections: CartSelections, note: string) {
+interface InferredSelectedOptions {
+  size?: { name: string; priceModifier: number }
+  toppings?: Array<{ name: string; priceModifier: number }>
+  note?: string
+}
+
+function inferSelectedOptions(
+  menuItem: MenuItem | undefined,
+  selections: CartSelections,
+  note: string,
+): InferredSelectedOptions {
   if (!menuItem) return { note: String(note || '').trim() || undefined }
   let size: { name: string; priceModifier: number } | undefined
   const toppings: Array<{ name: string; priceModifier: number }> = []
@@ -740,6 +755,7 @@ export default function CustomerMenu() {
   const [tableId, setTableId] = useState('')
   const [tableName, setTableName] = useState('Chưa xác định')
   const [branchName, setBranchName] = useState('')
+  const [branchAddress, setBranchAddress] = useState('')
   const [resolvingTable, setResolvingTable] = useState(true)
 
   const [menuItems, setMenuItems] = useState<MenuItem[]>([])
@@ -821,7 +837,7 @@ export default function CustomerMenu() {
   const pendingChatFlushRef = useRef(false)
   const customerTypingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lineRemoveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
-  const categorySectionRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const categorySectionRefs = useRef<Record<string, HTMLElement | null>>({})
   const cartVersionRef = useRef<string>('')
   const persistCartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastTelemetryKeyRef = useRef('')
@@ -1044,6 +1060,7 @@ export default function CustomerMenu() {
         if (resolvedBranchName) {
           setBranchName(resolvedBranchName)
         }
+        setBranchAddress(String(data?.branchAddress || '').trim())
         const normalized = normalizeMenuPayload(data)
         setMenuItems(normalized)
       } catch (error: any) {
@@ -2163,29 +2180,6 @@ export default function CustomerMenu() {
     })
   }
 
-  const updateSelection = (menuItemId: string, groupId: string, value: string | string[]) => {
-    setCartDrafts((prev) => {
-      const current = getDraftForMenuItem(menuItemId, prev)
-      return {
-        ...prev,
-        [menuItemId]: {
-          ...current,
-          selections: {
-            ...current.selections,
-            [groupId]: normalizeSelectionValue(value),
-          },
-        },
-      }
-    })
-  }
-
-  const updateNote = (menuItemId: string, note: string) => {
-    setCartDrafts((prev) => {
-      const current = getDraftForMenuItem(menuItemId, prev)
-      return { ...prev, [menuItemId]: { ...current, note } }
-    })
-  }
-
   const openCustomizeModal = (menuItemId: string) => {
     const draft = getDraftForMenuItem(menuItemId)
     setCustomizeMenuItemId(menuItemId)
@@ -2529,31 +2523,18 @@ export default function CustomerMenu() {
         if (orderStorageKey) localStorage.setItem(orderStorageKey, newOrderId)
 
         if (paymentMode === 'ONLINE_PAY') {
-          let payment: any = null
-          try {
-            const paymentInit = await api.post('/payments/online/init', {
+          const { data: payment } = await api.post(
+            '/v1/payments',
+            {
               orderId: newOrderId,
+              amount: Number(order.totalAmount),
               provider: paymentProvider,
-            })
-            const redirectUrl = String(paymentInit.data?.redirectUrl || '').trim()
-            if (redirectUrl) {
-              window.location.href = redirectUrl
-            }
-          } catch {
-            const fallback = await api.post(
-              '/v1/payments',
-              {
-                orderId: newOrderId,
-                amount: Number(order.totalAmount),
-                provider: paymentProvider,
-                tableId,
-                branchId: qrBranchId || undefined,
-                customerName: customerSession?.name || orderCustomerName.trim() || tableName,
-              },
-              customerToken ? { headers: { Authorization: `Bearer ${customerToken}` } } : undefined,
-            )
-            payment = fallback.data
-          }
+              tableId,
+              branchId: qrBranchId || undefined,
+              customerName: customerSession?.name || orderCustomerName.trim() || tableName,
+            },
+            customerToken ? { headers: { Authorization: `Bearer ${customerToken}` } } : undefined,
+          )
           setCurrentPayment(payment)
           toast.success('Da tao don va hien ma QR thanh toan')
         } else {
@@ -2750,9 +2731,14 @@ export default function CustomerMenu() {
           <div className="flex items-center justify-between gap-2">
             <div>
               <p className="text-base font-bold text-[#3d1f00]">{resolvingTable ? 'Đang xác định bàn...' : `🪑 ${tableName}`}</p>
-              <p className="text-xs text-slate-500">
-                {branchName || 'Chi nhánh đang phục vụ'}
-              </p>
+              {branchName ? (
+                <>
+                  <p className="text-sm font-semibold text-amber-800">📍 {branchName}</p>
+                  {branchAddress && <p className="text-xs text-slate-500">{branchAddress}</p>}
+                </>
+              ) : (
+                <p className="text-xs text-slate-500">Chi nhánh đang phục vụ</p>
+              )}
             </div>
             <button
               type="button"
@@ -2846,6 +2832,11 @@ export default function CustomerMenu() {
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2">
             {loadingMenu && <p>Đang tải menu...</p>}
+            {!loadingMenu && menuItems.length === 0 && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                Chi nhánh chưa có món, vui lòng gọi nhân viên để được hỗ trợ.
+              </div>
+            )}
             {!loadingMenu && (
               <div className="space-y-6">
               {groupedFilteredItems.map(({ category, items }) => (
@@ -3478,6 +3469,14 @@ export default function CustomerMenu() {
                             {currentPayment.vietQr?.qrImageUrl && (
                               <div className="rounded border border-sky-200 bg-white p-2">
                                 <p className="mb-2 text-xs text-slate-600">Quét QR SePay để thanh toán</p>
+                                {currentPayment.underpaid && (
+                                  <div className="mb-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+                                    Bạn đã chuyển{' '}
+                                    <span className="font-semibold">{Number(currentPayment.amountReceived || 0).toLocaleString()}đ</span>, còn thiếu{' '}
+                                    <span className="font-semibold">{Number(currentPayment.amountShortfall || 0).toLocaleString()}đ</span>.
+                                    {' '}Vui lòng quét mã QR bên dưới để chuyển nốt phần còn lại.
+                                  </div>
+                                )}
                                 <img
                                   src={currentPayment.vietQr.qrImageUrl}
                                   alt="SePay QR"
