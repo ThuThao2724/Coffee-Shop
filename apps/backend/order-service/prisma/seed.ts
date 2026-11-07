@@ -183,16 +183,9 @@ async function main() {
       },
       select: { id: true },
     });
+    // Seed only initializes missing data: never overwrite a category that already exists.
     const category = existingCategory
-      ? await prisma.menuCategory.update({
-          where: { id: existingCategory.id },
-          data: {
-            isActive: true,
-            sortOrder: index,
-            branchId: null,
-          },
-          select: { id: true },
-        })
+      ? existingCategory
       : await prisma.menuCategory.create({
           data: {
             name: categoryNameMap[key],
@@ -216,17 +209,7 @@ async function main() {
     });
 
     if (existing) {
-      await prisma.menuItem.update({
-        where: { id: existing.id },
-        data: {
-          ...item,
-          categoryId,
-          available: true,
-          image,
-          customizations,
-        },
-      });
-      menuItemIdsByName[item.name] = existing.id;
+      // Do not touch existing items: price, "ngừng bán", image and options belong to the shop.
       continue;
     }
 
@@ -245,9 +228,7 @@ async function main() {
   for (const promo of promoCodes) {
     await prisma.promotionCode.upsert({
       where: { code: promo.code },
-      update: {
-        ...promo,
-      },
+      update: {},
       create: {
         ...promo,
       },
@@ -269,11 +250,7 @@ async function main() {
             ingredientId: row.ingredientId,
           },
         },
-        update: {
-          ingredientName: row.ingredientName,
-          quantity: row.quantity,
-          unit: row.unit,
-        },
+        update: {},
         create: {
           menuItemId,
           ingredientId: row.ingredientId,

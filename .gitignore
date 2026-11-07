@@ -60,6 +60,8 @@ secrets/
 # Docker / local runtime / generated backups
 backups/
 *.sql
+# ...except Prisma migrations, which must be committed (services start with `prisma migrate deploy`)
+!**/prisma/migrations/**/*.sql
 *.sqlite
 *.sqlite3
 
@@ -71,3 +73,6 @@ playwright-report/
 tmp/
 temp/
 *.tmp
+
+# Local tunnel tooling (cloudflared.exe, logs, .env backup)
+.tools/
