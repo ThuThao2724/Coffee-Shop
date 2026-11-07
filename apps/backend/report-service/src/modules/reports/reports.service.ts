@@ -492,8 +492,8 @@ export class ReportsService implements OnModuleDestroy {
     };
   }
 
-  async getDailyStats(dateFrom?: string, dateTo?: string) {
-    return this.getDashboard({ dateFrom, dateTo, groupBy: 'day' });
+  async getDailyStats(dateFrom?: string, dateTo?: string, branchId?: string) {
+    return this.getDashboard({ dateFrom, dateTo, groupBy: 'day', branchId });
   }
 
   async exportReport(query: ExportReportQueryDto): Promise<{ buffer: Buffer; contentType: string; filename: string }> {

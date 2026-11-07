@@ -261,32 +261,8 @@ export class OrderService {
       orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
     });
 
-    if (!branchItems.length) {
-      const fallbackItems = await this.prisma.menuItem.findMany({
-        where: {
-          available: true,
-          ingredients: { some: {} },
-        },
-        include: {
-          categoryRef: true,
-          optionGroups: {
-            include: {
-              group: {
-                include: {
-                  values: {
-                    where: { isActive: true },
-                    orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
-                  },
-                },
-              },
-            },
-            orderBy: { sortOrder: 'asc' },
-          },
-        },
-        orderBy: [{ category: 'asc' }, { name: 'asc' }],
-      });
-      return fallbackItems.map((item) => this.mapMenuItemForCustomer(item));
-    }
+    // A branch only sells the items enabled for it (createOrder enforces this), so there is no
+    // fallback to the global menu here: an unconfigured branch simply has no items yet.
 
     return branchItems.map((entry) => this.mapMenuItemForCustomer(entry.menuItem, entry));
   }
@@ -331,45 +307,12 @@ export class OrderService {
       orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
     });
 
-    let flatItems = entries
+    const flatItems = entries
       .map((entry) => this.mapBranchMenuItemResponse(entry.menuItem, entry))
       .filter(Boolean) as any[];
 
-    if (!flatItems.length) {
-      const fallbackItems = await this.prisma.menuItem.findMany({
-        where: { available: true, ingredients: { some: {} } },
-        include: {
-          categoryRef: true,
-          optionGroups: {
-            include: {
-              group: {
-                include: {
-                  values: {
-                    where: { isActive: true },
-                    orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
-                  },
-                },
-              },
-            },
-            orderBy: [{ sortOrder: 'asc' }],
-          },
-        },
-        orderBy: [{ category: 'asc' }, { name: 'asc' }],
-      });
-
-      flatItems = fallbackItems
-        .map((item) =>
-          this.mapBranchMenuItemResponse(item, {
-            id: item.id,
-            branchId: resolvedBranchId,
-            isAvailable: true,
-            price: item.price,
-            displayOrder: 0,
-            customOptions: null,
-          }),
-        )
-        .filter(Boolean) as any[];
-    }
+    // No fallback to the global menu: items not enabled for this branch cannot be ordered there
+    // (createOrder rejects them), so an unconfigured branch returns an empty menu instead.
 
     const categoryMap = new Map<string, { id: string; name: string; emoji: string; sortOrder: number; items: any[] }>();
     flatItems.forEach((item, index) => {
@@ -397,9 +340,12 @@ export class OrderService {
       });
     });
 
+    const branchInfo = await this.resolveBranchDisplayInfo(resolvedBranchId);
+
     return {
       branchId: resolvedBranchId,
-      branchName: '',
+      branchName: branchInfo.name,
+      branchAddress: branchInfo.address,
       tableId: tableIdNormalized || null,
       tableName: tableIdNormalized ? `Bàn ${tableIdNormalized}` : '',
       categories: Array.from(categoryMap.values()),
@@ -2070,6 +2016,41 @@ export class OrderService {
       }
       this.logger.warn(`Table service khong san sang de truy van chi nhanh cua ban ${normalizedTableId}: ${(error as Error).message}`);
       throw new BadRequestException('Khong the xac dinh chi nhanh cua ban');
+    }
+  }
+
+  private readonly branchDisplayCache = new Map<string, { name: string; address: string; expiresAt: number }>();
+
+  /** Best-effort branch name/address lookup (cached 5 min) for the customer-facing menu header. */
+  private async resolveBranchDisplayInfo(branchId: string): Promise<{ name: string; address: string }> {
+    const normalized = this.normalizeBranchId(branchId);
+    if (!normalized) return { name: '', address: '' };
+
+    const cached = this.branchDisplayCache.get(normalized);
+    if (cached && cached.expiresAt > Date.now()) {
+      return { name: cached.name, address: cached.address };
+    }
+
+    try {
+      const response = await this.fetchWithRetry(
+        `${this.userServiceUrl}/api/branches/${encodeURIComponent(normalized)}/display-info`,
+        { headers: { Authorization: `Bearer ${this.internalServiceToken}` } },
+        { attempts: 2 },
+      );
+      if (!response.ok) {
+        this.logger.warn(`Khong lay duoc ten chi nhanh ${normalized}: ${response.status}`);
+        return { name: '', address: '' };
+      }
+      const payload = (await response.json()) as { name?: string | null; address?: string | null };
+      const info = {
+        name: String(payload?.name || '').trim(),
+        address: String(payload?.address || '').trim(),
+      };
+      this.branchDisplayCache.set(normalized, { ...info, expiresAt: Date.now() + 5 * 60 * 1000 });
+      return info;
+    } catch (error) {
+      this.logger.warn(`User service khong san sang de lay ten chi nhanh ${normalized}: ${(error as Error).message}`);
+      return { name: '', address: '' };
     }
   }
 
