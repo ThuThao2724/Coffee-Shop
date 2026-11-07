@@ -2701,8 +2701,8 @@ def sentiment_trend(request: Request, branchId: str, days: int = 7) -> dict[str,
     today = datetime.now(timezone.utc).date()
     points = []
     for i in range(max(1, min(days, 30))):
-        d = today - timedelta(days=i)
-        points.append({"date": d.isoformat(), "positive": 0.7 + (i % 3) * 0.03, "neutral": 0.2 - (i % 2) * 0.02, "negative": 0.1 - (i % 2) * 0.01})
+        day = today - timedelta(days=i)
+        points.append({"date": day.isoformat(), "positive": 0.7 + (i % 3) * 0.03, "neutral": 0.2 - (i % 2) * 0.02, "negative": 0.1 - (i % 2) * 0.01})
     log_audit("/api/ai/sentiment/trend", "trend", True, branchId)
     track_response_source("/api/ai/sentiment/trend", "fallback")
     return {"branchId": branchId, "points": list(reversed(points)), "source": "fallback"}

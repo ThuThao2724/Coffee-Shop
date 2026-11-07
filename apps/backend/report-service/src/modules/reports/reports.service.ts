@@ -18,6 +18,8 @@ import { CustomLogger } from '../../common/logger.service';
 type DateRange = { from?: string; to?: string; dateFrom?: string; dateTo?: string; branchId?: string };
 type WhereBuildResult = { clause: string; params: any[] };
 
+// pdfkit is loaded with require() on purpose (CommonJS default export).
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const PDFDocument = require('pdfkit');
 
 @Injectable()

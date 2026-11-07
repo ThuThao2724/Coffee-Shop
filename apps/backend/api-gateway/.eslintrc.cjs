@@ -15,5 +15,7 @@ module.exports = {
   ignorePatterns: ['dist', 'node_modules'],
   rules: {
     '@typescript-eslint/no-explicit-any': 'off',
+    // Allow intentionally unused arguments/variables when prefixed with `_`.
+    '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
   },
 };
