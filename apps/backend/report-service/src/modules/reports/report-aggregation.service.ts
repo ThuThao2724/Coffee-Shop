@@ -163,13 +163,19 @@ export class ReportAggregationService implements OnModuleInit, OnModuleDestroy {
     return Number.isFinite(value) && value >= 1 ? Math.min(Math.trunc(value), 60) : 3;
   }
 
+  /**
+   * Calendar day used for the daily buckets. Defaults to UTC, the same day boundaries as the existing
+   * revenue/top-items reports (and the seeded demo data, whose shop hours were written as UTC), so the
+   * tables agree with the dashboards. A shop running on real data can set REPORT_TIMEZONE, e.g.
+   * Asia/Ho_Chi_Minh, once the reports use the same zone.
+   */
   get timeZone() {
-    const zone = String(this.config.get('REPORT_TIMEZONE', 'Asia/Ho_Chi_Minh') || '').trim();
+    const zone = String(this.config.get('REPORT_TIMEZONE', 'UTC') || '').trim();
     try {
       new Intl.DateTimeFormat('en-CA', { timeZone: zone });
       return zone;
     } catch {
-      return 'Asia/Ho_Chi_Minh';
+      return 'UTC';
     }
   }
 
