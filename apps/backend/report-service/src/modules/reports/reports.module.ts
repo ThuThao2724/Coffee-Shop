@@ -6,11 +6,12 @@ import { ReportsController } from './reports.controller';
 import { ReportsHealthController } from './reports-health.controller';
 import { ReportsService } from './reports.service';
 import { ReportsRealtimeService } from './reports-realtime.service';
+import { ReportAggregationService } from './report-aggregation.service';
 
 @Module({
   imports: [PrismaModule, CommonModule, KafkaModule],
   controllers: [ReportsController, ReportsHealthController],
-  providers: [ReportsService, ReportsRealtimeService],
+  providers: [ReportsService, ReportsRealtimeService, ReportAggregationService],
 })
 export class ReportsModule {}
 

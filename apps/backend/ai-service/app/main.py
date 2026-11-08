@@ -1789,7 +1789,10 @@ def map_question_to_sql(question: str, branch_id: str | None) -> str:
             f'{"AND" if where else "WHERE"} "forecastDate"::date = CURRENT_DATE'
         )
     if "món" in q and ("bán chạy" in q or "ban chay" in q):
-        return f'SELECT "menuItemId", SUM(quantity)::int AS qty FROM item_sales {where} GROUP BY "menuItemId" ORDER BY qty DESC LIMIT 10'
+        return (
+            f'SELECT "menuItemId", MAX("menuItemName") AS "menuItemName", SUM(quantity)::int AS qty '
+            f'FROM item_sales {where} GROUP BY "menuItemId" ORDER BY qty DESC LIMIT 10'
+        )
     if "bất thường" in q or "canh bao" in q or "cảnh báo" in q:
         return f'SELECT id, "alertType", severity, description, "isResolved", "detectedAt" FROM anomaly_alert {where} ORDER BY "detectedAt" DESC LIMIT 20'
     if "cảm xúc" in q or "cam xuc" in q or "sentiment" in q:
@@ -1819,7 +1822,8 @@ def summarize_sql_result(intent: str, rows: list[dict[str, Any]]) -> str:
         return f"Doanh thu ước tính theo dữ liệu hiện có là {int(revenue):,}đ."
     if intent == "TOP_ITEMS_QUERY":
         top = rows[0]
-        return f"Món dẫn đầu hiện tại là {top.get('menuItemId', 'N/A')} với số lượng {top.get('qty', 0)}."
+        name = top.get("menuItemName") or top.get("menuItemId", "N/A")
+        return f"Món dẫn đầu hiện tại là {name} với số lượng {top.get('qty', 0)}."
     if intent == "ANOMALY_QUERY":
         return f"Có {len(rows)} cảnh báo bất thường gần nhất trong phạm vi truy vấn."
     if intent == "SENTIMENT_QUERY":
@@ -2905,14 +2909,14 @@ GEMINI_SQL_SCHEMA_CONTEXT = (
     "CHI duoc sinh ra DUY NHAT mot cau lenh SELECT, khong giai thich, khong dung markdown, khong dung dau cham phay o cuoi. "
     "Cac bang du lieu co san (schema report-service): "
     'daily_revenue(date date, revenue numeric, "orderCount" int); '
-    'item_sales(id text, date date, "menuItemId" text, quantity int, revenue numeric, "orderCount" int); '
+    'item_sales(id text, date date, "branchId" text, "menuItemId" text, "menuItemName" text, quantity int, revenue numeric, "orderCount" int); '
     'daily_stats(date date, "totalOrders" int, "totalRevenue" numeric, "avgOrderValue" numeric, "topItemMenuId" text); '
     'sales_forecast(id text, "branchId" text, "forecastDate" date, granularity text, "predictedRevenue" numeric, "confidenceLow" numeric, "confidenceHigh" numeric, confidence numeric, "generatedAt" timestamp); '
     'anomaly_alert(id text, "branchId" text, "alertType" text, severity text, description text, "isResolved" boolean, "detectedAt" timestamp); '
     'sentiment_analysis(id text, "branchId" text, "sourceType" text, "originalText" text, label text, confidence numeric, "analyzedAt" timestamp). '
     "Vi du 1: Cau hoi Doanh thu tuan truoc la bao nhieu thi tra loi SQL la "
     "SELECT COALESCE(SUM(revenue), 0) AS revenue FROM daily_revenue WHERE date >= date_trunc(\'week\', CURRENT_DATE) - interval \'7 days\' AND date < date_trunc(\'week\', CURRENT_DATE) LIMIT 50. "
-    'Vi du 2: Cau hoi Top 5 mon ban chay nhat thang nay thi tra loi SQL la SELECT "menuItemId", SUM(quantity)::int AS qty FROM item_sales WHERE date >= date_trunc(\'month\', CURRENT_DATE) GROUP BY "menuItemId" ORDER BY qty DESC LIMIT 5. '
+    'Vi du 2: Cau hoi Top 5 mon ban chay nhat thang nay thi tra loi SQL la SELECT "menuItemId", MAX("menuItemName") AS "menuItemName", SUM(quantity)::int AS qty FROM item_sales WHERE date >= date_trunc(\'month\', CURRENT_DATE) GROUP BY "menuItemId" ORDER BY qty DESC LIMIT 5. '
     "Vi du 3: Cau hoi Co bao nhieu canh bao bat thuong chua xu ly thi tra loi SQL la "
     'SELECT COUNT(*)::int AS count FROM anomaly_alert WHERE "isResolved" = false LIMIT 50. '
     "Luon them LIMIT toi da 50 neu cau hoi khong yeu cau con so cu the. "
@@ -3075,8 +3079,9 @@ def report_chat(payload: ReportChatPayload, request: Request) -> dict[str, Any]:
     sql = map_question_to_sql(sanitized_question, branch_id)
     sql_source = "rule"
 
-    # LLM-written SQL can neither be branch-scoped (daily_revenue/item_sales/daily_stats have no
-    # branchId) nor fully trusted, so only ADMIN gets it; everyone else uses the branch-scoped rules.
+    # LLM-written SQL can neither be branch-scoped (daily_revenue/daily_stats have no branchId and the
+    # model may ignore a filter) nor fully trusted, so only ADMIN gets it; everyone else uses the
+    # branch-scoped rules.
     if is_generic_fallback_question(sanitized_question) and AI_SENTIMENT_GEMINI_API_KEY and role == "ADMIN":
         try:
             gemini_sql_raw = generate_sql_with_gemini(sanitized_question, branch_id)

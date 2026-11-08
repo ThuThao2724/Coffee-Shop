@@ -18,6 +18,7 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
   private enabled = false;
   private readonly isProduction: boolean;
   private readonly kafkaRequired: boolean;
+  private readonly aggregationEnabled: boolean;
   private configured = false;
   private lastError: string | null = null;
 
@@ -28,6 +29,8 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
   ) {
     this.isProduction = String(this.configService.get('NODE_ENV', 'development')).toLowerCase() === 'production';
     this.kafkaRequired = String(this.configService.get('KAFKA_REQUIRED', 'false')).toLowerCase() === 'true';
+    this.aggregationEnabled =
+      String(this.configService.get('REPORT_AGGREGATION_ENABLED', 'true')).toLowerCase() !== 'false';
   }
 
   async onModuleInit() {
@@ -59,7 +62,9 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
       await this.consumer.run({
         eachMessage: async ({ topic, message }) => {
           const data = JSON.parse(message.value.toString());
-          if (topic === 'PaymentCompleted' && data.status === 'PAID') {
+          // The periodic ReportAggregationService rebuilds daily_revenue from paymentdb; adding the
+          // event on top would count the payment twice until the next rebuild.
+          if (topic === 'PaymentCompleted' && data.status === 'PAID' && !this.aggregationEnabled) {
             await this.handlePaymentCompleted(data as PaymentCompletedData);
           }
           if (topic === 'OrderCreated') {
