@@ -12,8 +12,11 @@ RUN npm config set fund false \
 COPY . .
 RUN npm run build -- --mode production
 
-FROM nginx:alpine
+# Runs as the unprivileged `nginx` user (uid 101), so it listens on 8080 instead of 80 and keeps its
+# pid/temp files under /tmp. Files below stay root-owned and read-only for that user.
+FROM nginxinc/nginx-unprivileged:1.31-alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
+USER 101
+EXPOSE 8080
 CMD ["nginx", "-g", "daemon off;"]

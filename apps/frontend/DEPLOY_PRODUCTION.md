@@ -23,7 +23,7 @@ docker build -t coffee-frontend:prod .
 ## 3) Run container
 
 ```bash
-docker run -d --name coffee-frontend -p 80:80 coffee-frontend:prod
+docker run -d --name coffee-frontend -p 80:8080 coffee-frontend:prod
 ```
 
 Container nginx already proxies:
