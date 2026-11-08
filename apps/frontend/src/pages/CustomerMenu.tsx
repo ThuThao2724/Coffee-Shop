@@ -1206,23 +1206,6 @@ export default function CustomerMenu() {
     return () => window.clearInterval(intervalId)
   }, [callWaiterCooldownUntil])
 
-  useEffect(() => {
-    if (!tableId || currentOrderId) return
-    const loadLatestOrder = async () => {
-      try {
-        const { data } = await api.get('/orders', { params: { tableId } })
-        if (Array.isArray(data) && data.length > 0) {
-          const latestOrderId = String(data[0].id)
-          setCurrentOrderId(latestOrderId)
-          if (orderStorageKey) localStorage.setItem(orderStorageKey, latestOrderId)
-        }
-      } catch {
-        // ignore
-      }
-    }
-    loadLatestOrder()
-  }, [tableId, currentOrderId, orderStorageKey])
-
   const saveCustomerSession = (token: string, user: CustomerSession) => {
     const normalizedUser: CustomerSession = {
       ...user,
