@@ -106,7 +106,7 @@ describe('PaymentService.resolveOrderAmount', () => {
 });
 
 describe('PaymentService.handleWebhook (SePay IPN)', () => {
-  const API_KEY = 'test-ipn-key-0123456789';
+  const API_KEY = 'test-ipn-key-0123456789'; // gitleaks:allow (fake key used only by this test)
   const basePayment = {
     id: 'pay_1',
     orderId: 'ORDER1',

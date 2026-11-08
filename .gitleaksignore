@@ -1,0 +1,3 @@
+# Known false positives (fake values in tests). One gitleaks fingerprint per line.
+# payment.service.spec.ts: fake SePay IPN key used only by the unit test (commit 0491bd2).
+0491bd26fa95f12c33bd6e1cbefea57963d3b027:apps/backend/payment-service/src/modules/payment/payment.service.spec.ts:generic-api-key:109
