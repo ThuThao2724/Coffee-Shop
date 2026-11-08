@@ -30,6 +30,8 @@ fi
 
 umask 077
 age --decrypt -i "$AGE_KEY_FILE" -o "$ENV_FILE" "$ENC_FILE"
+# Refuse to deploy with missing or public/demo secrets (prints no secret values).
+bash "$ROOT_DIR/scripts/check-deploy-env.sh"
 docker compose config -q
 docker compose up -d --build
 echo "Deploy done."

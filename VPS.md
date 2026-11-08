@@ -237,9 +237,21 @@ QR_BASE_URL=http://localhost/menu
 VITE_API_URL=/api
 VITE_WS_URL=http://localhost
 
-POSTGRES_PASSWORD=demo_postgres_password_123456
-JWT_SECRET=demo_jwt_secret_that_dai_123456789
-INTERNAL_SERVICE_TOKEN=demo_internal_token_that_dai_123456789
+POSTGRES_PASSWORD=<dán giá trị sinh ngẫu nhiên>
+JWT_SECRET=<dán giá trị sinh ngẫu nhiên>
+INTERNAL_SERVICE_TOKEN=<dán giá trị sinh ngẫu nhiên>
+```
+
+**Không dùng giá trị mẫu cố định.** Ai đọc repo cũng biết giá trị mẫu, và với `JWT_SECRET` đó họ có thể tự tạo token ADMIN. Sinh từng giá trị riêng:
+
+```bash
+openssl rand -hex 32
+```
+
+`JWT_SECRET` và `INTERNAL_SERVICE_TOKEN` là **bắt buộc**: thiếu thì `docker compose` dừng ngay. Kiểm tra trước khi chạy (không in giá trị nào):
+
+```bash
+bash scripts/check-deploy-env.sh
 ```
 
 > Không commit `.env`.
