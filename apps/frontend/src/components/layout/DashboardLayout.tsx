@@ -1,4 +1,4 @@
-import { Outlet, Navigate, useLocation } from 'react-router-dom'
+import { Outlet, Navigate, useLocation } from 'react-router'
 import { useEffect, useState } from 'react'
 import { useAuthStore } from '@/stores/authStore'
 import Sidebar from './Sidebar'

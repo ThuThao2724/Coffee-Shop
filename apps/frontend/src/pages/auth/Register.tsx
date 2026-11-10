@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import Button from '@/components/ui/Button'
 import { useAuthStore } from '@/stores/authStore'
 import { normalizeRole } from '@/utils/rbac'

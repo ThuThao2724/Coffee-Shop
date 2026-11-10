@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import Card from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
 import api from '@/utils/api'
