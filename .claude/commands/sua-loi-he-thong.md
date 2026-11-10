@@ -5,6 +5,8 @@ argument-hint: "[đợt hoặc mã lỗi, vd: dot-1 | dot-2 | L3 | L4,L5 | tat-c
 
 # Sửa lỗi hệ thống Coffee Shop
 
+> **Trạng thái (2026-11-07):** Đợt 1–6 cùng L22, L23 đã xong và nằm trong **PR #2** (CI 32/32 xanh). Việc còn tồn đọng nằm ở `/sua-loi-con-lai`. Chỉ chạy lại lệnh này để kiểm tra một lỗi cũ có tái xuất hiện không.
+
 Phạm vi lần này: **$ARGUMENTS**. Nếu để trống, chỉ làm **Đợt 1**. `tat-ca` nghĩa là làm lần lượt từ Đợt 1 đến Đợt 6, **dừng lại báo cáo sau mỗi đợt** rồi mới làm đợt tiếp theo.
 
 Danh sách lỗi dưới đây có từ lần rà soát ngày 2026-11-06 (`/ra-soat-he-thong`). Code có thể đã đổi từ đó, nên **trước khi sửa mỗi lỗi, hãy kiểm chứng lại là lỗi vẫn còn**. Lỗi nào đã hết thì ghi "đã hết" và bỏ qua.

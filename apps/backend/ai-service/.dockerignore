@@ -1,0 +1,11 @@
+# Keep local leftovers out of the image (old main.py copies still contain since-fixed vulnerable code).
+**/*.backup_*
+**/*.bak
+**/__pycache__
+**/*.pyc
+.env
+.env.*
+!.env.example
+.pytest_cache
+.mypy_cache
+.ruff_cache

@@ -473,14 +473,14 @@ services:
           memory: 128m
     build: ./apps/frontend
     ports:
-      - "${DOCKER_BIND_IP:-127.0.0.1}:${FRONTEND_MENU_HOST_PORT:-8088}:80"
+      - "${DOCKER_BIND_IP:-127.0.0.1}:${FRONTEND_MENU_HOST_PORT:-8088}:8080"
     depends_on:
       api-gateway:
         condition: service_started
       chat-service:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null 2>&1 || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 8
@@ -515,6 +515,7 @@ services:
       AI_SENTIMENT_GEMINI_API_KEY: ${AI_SENTIMENT_GEMINI_API_KEY:-}
       AI_SENTIMENT_GEMINI_MODEL: ${AI_SENTIMENT_GEMINI_MODEL:-gemini-1.5-flash}
       AI_SENTIMENT_GEMINI_TIMEOUT_MS: ${AI_SENTIMENT_GEMINI_TIMEOUT_MS:-2500}
+      AI_REPORT_GEMINI_TIMEOUT_MS: ${AI_REPORT_GEMINI_TIMEOUT_MS:-15000}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3010/api/ai/health').read()"]
       interval: 10s

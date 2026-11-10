@@ -1,12 +1,14 @@
 import { Controller, Get } from '@nestjs/common';
 import { KafkaService } from '../../kafka/kafka.service';
 import { ReportsRealtimeService } from './reports-realtime.service';
+import { ReportAggregationService } from './report-aggregation.service';
 
 @Controller('reports')
 export class ReportsHealthController {
   constructor(
     private readonly kafkaService: KafkaService,
     private readonly reportsRealtimeService: ReportsRealtimeService,
+    private readonly reportAggregationService: ReportAggregationService,
   ) {}
 
   @Get('health')
@@ -32,6 +34,7 @@ export class ReportsHealthController {
           disconnectRate: realtime.disconnectRate,
           p95LagMs: realtime.lag?.p95Ms || 0,
         },
+        aggregation: this.reportAggregationService.status(),
       },
       timestamp: new Date().toISOString(),
     };

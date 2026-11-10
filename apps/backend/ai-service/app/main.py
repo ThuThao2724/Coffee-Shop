@@ -6,6 +6,8 @@ import re
 import time
 from urllib import request as urlrequest
 from datetime import datetime, timedelta, timezone
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from functools import wraps
 from typing import Any
 from uuid import uuid4
@@ -18,7 +20,14 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, ge
 from pydantic import BaseModel, Field
 
 
-app = FastAPI(title="coffee-ai-service", version="0.3.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Starlette 1.x removed @app.on_event; the startup work runs through the lifespan instead.
+    await startup_tasks()
+    yield
+
+
+app = FastAPI(title="coffee-ai-service", version="0.3.0", lifespan=lifespan)
 
 REQUEST_COUNT = Counter("ai_requests_total", "Total AI requests", ["endpoint", "status"])
 REQUEST_LATENCY = Histogram("ai_request_latency_seconds", "AI request latency", ["endpoint"])
@@ -47,6 +56,10 @@ AI_RATE_LIMIT_CHAT_PER_MINUTE = int(os.getenv("AI_RATE_LIMIT_CHAT_PER_MINUTE", "
 AI_SENTIMENT_GEMINI_API_KEY = os.getenv("AI_SENTIMENT_GEMINI_API_KEY", "").strip()
 AI_SENTIMENT_GEMINI_MODEL = os.getenv("AI_SENTIMENT_GEMINI_MODEL", "gemini-1.5-flash").strip() or "gemini-1.5-flash"
 AI_SENTIMENT_GEMINI_TIMEOUT_MS = int(os.getenv("AI_SENTIMENT_GEMINI_TIMEOUT_MS", "2500"))
+# Report chat makes two Gemini calls (write SQL, then summarise rows); writing SQL takes several seconds,
+# so it cannot share the short sentiment timeout (it always timed out and silently fell back to rules).
+# 2 x 15s stays under the gateway's 45s proxy timeout for /api/ai.
+AI_REPORT_GEMINI_TIMEOUT_MS = int(os.getenv("AI_REPORT_GEMINI_TIMEOUT_MS", "15000"))
 AI_SENTIMENT_QUALITY_LOOKBACK_HOURS = int(os.getenv("AI_SENTIMENT_QUALITY_LOOKBACK_HOURS", "24"))
 
 DEFAULT_MENU_KB = [
@@ -1758,8 +1771,7 @@ async def forecast_cron_loop():
             await asyncio.sleep(30)
 
 
-@app.on_event("startup")
-async def startup_tasks():
+async def startup_tasks() -> None:
     reload_knowledge_base(source="startup")
     ensure_untrusted_sql_role()
     init_recommend_ab_event_store()
@@ -1777,7 +1789,10 @@ def map_question_to_sql(question: str, branch_id: str | None) -> str:
             f'{"AND" if where else "WHERE"} "forecastDate"::date = CURRENT_DATE'
         )
     if "món" in q and ("bán chạy" in q or "ban chay" in q):
-        return f'SELECT "menuItemId", SUM(quantity)::int AS qty FROM item_sales {where} GROUP BY "menuItemId" ORDER BY qty DESC LIMIT 10'
+        return (
+            f'SELECT "menuItemId", MAX("menuItemName") AS "menuItemName", SUM(quantity)::int AS qty '
+            f'FROM item_sales {where} GROUP BY "menuItemId" ORDER BY qty DESC LIMIT 10'
+        )
     if "bất thường" in q or "canh bao" in q or "cảnh báo" in q:
         return f'SELECT id, "alertType", severity, description, "isResolved", "detectedAt" FROM anomaly_alert {where} ORDER BY "detectedAt" DESC LIMIT 20'
     if "cảm xúc" in q or "cam xuc" in q or "sentiment" in q:
@@ -1807,7 +1822,8 @@ def summarize_sql_result(intent: str, rows: list[dict[str, Any]]) -> str:
         return f"Doanh thu ước tính theo dữ liệu hiện có là {int(revenue):,}đ."
     if intent == "TOP_ITEMS_QUERY":
         top = rows[0]
-        return f"Món dẫn đầu hiện tại là {top.get('menuItemId', 'N/A')} với số lượng {top.get('qty', 0)}."
+        name = top.get("menuItemName") or top.get("menuItemId", "N/A")
+        return f"Món dẫn đầu hiện tại là {name} với số lượng {top.get('qty', 0)}."
     if intent == "ANOMALY_QUERY":
         return f"Có {len(rows)} cảnh báo bất thường gần nhất trong phạm vi truy vấn."
     if intent == "SENTIMENT_QUERY":
@@ -2893,14 +2909,14 @@ GEMINI_SQL_SCHEMA_CONTEXT = (
     "CHI duoc sinh ra DUY NHAT mot cau lenh SELECT, khong giai thich, khong dung markdown, khong dung dau cham phay o cuoi. "
     "Cac bang du lieu co san (schema report-service): "
     'daily_revenue(date date, revenue numeric, "orderCount" int); '
-    'item_sales(id text, date date, "menuItemId" text, quantity int, revenue numeric, "orderCount" int); '
+    'item_sales(id text, date date, "branchId" text, "menuItemId" text, "menuItemName" text, quantity int, revenue numeric, "orderCount" int); '
     'daily_stats(date date, "totalOrders" int, "totalRevenue" numeric, "avgOrderValue" numeric, "topItemMenuId" text); '
     'sales_forecast(id text, "branchId" text, "forecastDate" date, granularity text, "predictedRevenue" numeric, "confidenceLow" numeric, "confidenceHigh" numeric, confidence numeric, "generatedAt" timestamp); '
     'anomaly_alert(id text, "branchId" text, "alertType" text, severity text, description text, "isResolved" boolean, "detectedAt" timestamp); '
     'sentiment_analysis(id text, "branchId" text, "sourceType" text, "originalText" text, label text, confidence numeric, "analyzedAt" timestamp). '
     "Vi du 1: Cau hoi Doanh thu tuan truoc la bao nhieu thi tra loi SQL la "
     "SELECT COALESCE(SUM(revenue), 0) AS revenue FROM daily_revenue WHERE date >= date_trunc(\'week\', CURRENT_DATE) - interval \'7 days\' AND date < date_trunc(\'week\', CURRENT_DATE) LIMIT 50. "
-    'Vi du 2: Cau hoi Top 5 mon ban chay nhat thang nay thi tra loi SQL la SELECT "menuItemId", SUM(quantity)::int AS qty FROM item_sales WHERE date >= date_trunc(\'month\', CURRENT_DATE) GROUP BY "menuItemId" ORDER BY qty DESC LIMIT 5. '
+    'Vi du 2: Cau hoi Top 5 mon ban chay nhat thang nay thi tra loi SQL la SELECT "menuItemId", MAX("menuItemName") AS "menuItemName", SUM(quantity)::int AS qty FROM item_sales WHERE date >= date_trunc(\'month\', CURRENT_DATE) GROUP BY "menuItemId" ORDER BY qty DESC LIMIT 5. '
     "Vi du 3: Cau hoi Co bao nhieu canh bao bat thuong chua xu ly thi tra loi SQL la "
     'SELECT COUNT(*)::int AS count FROM anomaly_alert WHERE "isResolved" = false LIMIT 50. '
     "Luon them LIMIT toi da 50 neu cau hoi khong yeu cau con so cu the. "
@@ -2935,7 +2951,7 @@ def generate_sql_with_gemini(question, branch_id):
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    timeout_sec = max(0.5, AI_SENTIMENT_GEMINI_TIMEOUT_MS / 1000.0)
+    timeout_sec = max(0.5, AI_REPORT_GEMINI_TIMEOUT_MS / 1000.0)
     with urlrequest.urlopen(req, timeout=timeout_sec) as response:
         body = response.read().decode("utf-8", errors="ignore")
     import json
@@ -3021,7 +3037,7 @@ def summarize_with_gemini(question, rows):
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    timeout_sec = max(0.5, AI_SENTIMENT_GEMINI_TIMEOUT_MS / 1000.0)
+    timeout_sec = max(0.5, AI_REPORT_GEMINI_TIMEOUT_MS / 1000.0)
     with urlrequest.urlopen(req, timeout=timeout_sec) as response:
         body = response.read().decode("utf-8", errors="ignore")
     parsed = json_mod.loads(body)
@@ -3063,8 +3079,9 @@ def report_chat(payload: ReportChatPayload, request: Request) -> dict[str, Any]:
     sql = map_question_to_sql(sanitized_question, branch_id)
     sql_source = "rule"
 
-    # LLM-written SQL can neither be branch-scoped (daily_revenue/item_sales/daily_stats have no
-    # branchId) nor fully trusted, so only ADMIN gets it; everyone else uses the branch-scoped rules.
+    # LLM-written SQL can neither be branch-scoped (daily_revenue/daily_stats have no branchId and the
+    # model may ignore a filter) nor fully trusted, so only ADMIN gets it; everyone else uses the
+    # branch-scoped rules.
     if is_generic_fallback_question(sanitized_question) and AI_SENTIMENT_GEMINI_API_KEY and role == "ADMIN":
         try:
             gemini_sql_raw = generate_sql_with_gemini(sanitized_question, branch_id)

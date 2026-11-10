@@ -36,6 +36,8 @@ model ItemSales {
   id           String   @id @default(cuid())
   date         DateTime
   menuItemId   String
+  menuItemName String?
+  branchId     String?
   quantity     Int
   revenue      Decimal
   orderCount   Int      @default(1)
@@ -46,6 +48,7 @@ model ItemSales {
   @@index([date])
   @@index([menuItemId])
   @@index([date, menuItemId])
+  @@index([branchId, date])
 }
 
 model DailyStats {

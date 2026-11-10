@@ -14,6 +14,7 @@ import {
   TopItemsQueryDto,
 } from './dto/report-query.dto';
 import { CustomLogger } from '../../common/logger.service';
+import { createReadPool, resolveDatabaseUrl } from '../../common/database-url';
 
 type DateRange = { from?: string; to?: string; dateFrom?: string; dateTo?: string; branchId?: string };
 type WhereBuildResult = { clause: string; params: any[] };
@@ -33,10 +34,10 @@ export class ReportsService implements OnModuleDestroy {
     private readonly configService: ConfigService,
     @Inject('CustomLogger') private readonly logger: CustomLogger,
   ) {
-    this.orderPool = this.createPool(this.resolveDatabaseUrl('ORDER_DATABASE_URL', 'orderdb'));
-    this.inventoryPool = this.createPool(this.resolveDatabaseUrl('INVENTORY_DATABASE_URL', 'inventorydb'));
-    this.paymentPool = this.createPool(this.resolveDatabaseUrl('PAYMENT_DATABASE_URL', 'paymentdb'));
-    this.userPool = this.createPool(this.resolveDatabaseUrl('USER_DATABASE_URL', 'userdb'));
+    this.orderPool = createReadPool(resolveDatabaseUrl(configService, 'ORDER_DATABASE_URL', 'orderdb'));
+    this.inventoryPool = createReadPool(resolveDatabaseUrl(configService, 'INVENTORY_DATABASE_URL', 'inventorydb'));
+    this.paymentPool = createReadPool(resolveDatabaseUrl(configService, 'PAYMENT_DATABASE_URL', 'paymentdb'));
+    this.userPool = createReadPool(resolveDatabaseUrl(configService, 'USER_DATABASE_URL', 'userdb'));
   }
 
   async onModuleDestroy() {
@@ -957,35 +958,6 @@ export class ReportsService implements OnModuleDestroy {
   private normalizeBranchId(branchId?: string | null): string | null {
     const normalized = String(branchId || '').trim();
     return normalized || null;
-  }
-
-  private resolveDatabaseUrl(envName: string, fallbackDbName: string): string {
-    const direct = this.configService.get<string>(envName);
-    if (direct) {
-      return direct;
-    }
-
-    const base = this.configService.get<string>('DATABASE_URL', '');
-    if (!base) {
-      throw new Error(`Missing database url for ${envName}`);
-    }
-
-    try {
-      const url = new URL(base);
-      url.pathname = `/${fallbackDbName}`;
-      return url.toString();
-    } catch {
-      throw new Error(`Invalid DATABASE_URL format: ${base}`);
-    }
-  }
-
-  private createPool(connectionString: string) {
-    return new Pool({
-      connectionString,
-      max: 5,
-      idleTimeoutMillis: 10000,
-      connectionTimeoutMillis: 5000,
-    });
   }
 }
 
