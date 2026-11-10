@@ -126,10 +126,6 @@ export default function Header({
     }
   }, [soundEnabled, user?.id, user?.role])
 
-  const selectedNotif = useMemo(
-    () => notifItems.find((item) => item.id === selectedNotifId) || null,
-    [notifItems, selectedNotifId],
-  )
 
   const fallbackLocalItems = useMemo<NotificationApiItem[]>(
     () =>

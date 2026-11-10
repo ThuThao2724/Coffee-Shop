@@ -7,6 +7,7 @@ import { showRealtimeNotification } from '@/utils/notifications'
 import { useUiStore } from '@/stores/uiStore'
 import { useAuthStore } from '@/stores/authStore'
 import { useBranchScopeStore } from '@/stores/branchScopeStore'
+import { useBranchName } from '@/hooks/useBranchName'
 import { RoutePageSkeleton } from '@/components/ui/PageSkeleton'
 import { useI18n } from '@/utils/i18n'
 import { maDonHangNgan, trangThaiDonHang } from '@/utils/display'
@@ -157,6 +158,7 @@ export default function Kitchen() {
   const authToken = useAuthStore((state) => state.token)
   const selectedBranchId = useBranchScopeStore((state) => state.selectedBranchId)
   const effectiveBranchId = String(selectedBranchId || currentUser?.branchId || '').trim()
+  const kitchenBranchName = useBranchName(effectiveBranchId)
   const wsBaseUrl = resolveWebsocketBaseUrl()
   const kdsSocketRef = useRef<Socket | null>(null)
   const soundEnabledRef = useRef(soundEnabled)
@@ -475,7 +477,12 @@ export default function Kitchen() {
   return (
     <div className="space-y-5 sm:space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-bold text-slate-900 dark:text-white sm:text-2xl">{tv('Màn hình bếp (KDS)', 'Kitchen Display (KDS)')}</h1>
+        <div>
+          <h1 className="text-xl font-bold text-slate-900 dark:text-white sm:text-2xl">{tv('Màn hình bếp (KDS)', 'Kitchen Display (KDS)')}</h1>
+          <p className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+            📍 {effectiveBranchId ? kitchenBranchName || tv('Đang tải chi nhánh...', 'Loading branch...') : tv('Toàn hệ thống', 'All branches')}
+          </p>
+        </div>
         <div className="flex flex-wrap items-center gap-3 text-sm">
           <span
             className={`rounded-full px-2 py-1 ${

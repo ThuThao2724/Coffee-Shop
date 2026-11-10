@@ -139,6 +139,7 @@ const roleBadgeClass: Record<StaffRole, string> = {
 export default function StaffManagement() {
   const currentUser = useAuthStore((state) => state.user)
   const selectedBranchId = useBranchScopeStore((state) => state.selectedBranchId)
+  const setSelectedBranchId = useBranchScopeStore((state) => state.setSelectedBranchId)
   const currentRole = normalizeRole(currentUser?.role)
   const canManageAccounts = currentRole === 'ADMIN' || currentRole === 'MANAGER'
   const canManagePrivilegedAccounts = currentRole === 'ADMIN'
@@ -210,6 +211,19 @@ export default function StaffManagement() {
     if (staffBranchFilter) return staffBranchFilter
     return branches[0]?.id || ''
   }, [branches, currentRole, currentUser?.branchId, selectedBranchId, staffBranchFilter])
+
+  // Keep the form's branch dropdown showing the branch the new staff will actually be saved to.
+  // (Previously it showed "Chưa gán chi nhánh" while submit silently used activeBranchId.)
+  useEffect(() => {
+    if (editingStaffId) return
+    setStaffForm((prev) => {
+      if (currentRole === 'MANAGER') {
+        const own = currentUser?.branchId || ''
+        return prev.branchId === own ? prev : { ...prev, branchId: own }
+      }
+      return prev.branchId || !activeBranchId ? prev : { ...prev, branchId: activeBranchId }
+    })
+  }, [activeBranchId, currentRole, currentUser?.branchId, editingStaffId])
 
   const activeStaffs = useMemo(
     () => staffs.filter((item) => item.isActive),
@@ -766,7 +780,15 @@ export default function StaffManagement() {
           personalQrCode: null,
           branchId,
         })
-        toast.success('Đã thêm nhân viên')
+        const targetBranchName = branches.find((branch) => branch.id === branchId)?.name || branchId
+        if (branchId !== activeBranchId && currentRole === 'ADMIN') {
+          // The list only shows the branch selected in the header; switch to the new staff's branch
+          // so the admin actually sees the account that was just created.
+          setSelectedBranchId(branchId)
+          toast.success(`Đã thêm nhân viên vào ${targetBranchName}. Đã chuyển sang chi nhánh này để hiển thị.`)
+        } else {
+          toast.success(`Đã thêm nhân viên vào ${targetBranchName}`)
+        }
       }
 
       resetStaffForm()
@@ -1143,15 +1165,20 @@ export default function StaffManagement() {
               value={staffForm.name}
               onChange={(e) => setStaffForm((prev) => ({ ...prev, name: e.target.value }))}
             />
+            {/* autoComplete prevents the browser from filling in the logged-in manager's own credentials */}
             <Input
               required
               type="email"
+              name="new-staff-email"
+              autoComplete="off"
               placeholder="Email"
               value={staffForm.email}
               onChange={(e) => setStaffForm((prev) => ({ ...prev, email: e.target.value }))}
             />
             <Input
               type="password"
+              name="new-staff-password"
+              autoComplete="new-password"
               placeholder={editingStaffId ? 'Đổi mật khẩu (tùy chọn)' : 'Mật khẩu đăng nhập (để trống: tự sinh)'}
               value={staffForm.password}
               onChange={(e) => setStaffForm((prev) => ({ ...prev, password: e.target.value }))}
@@ -1205,7 +1232,7 @@ export default function StaffManagement() {
               onChange={(e) => setStaffForm((prev) => ({ ...prev, branchId: e.target.value }))}
               disabled={currentRole === 'MANAGER'}
             >
-              <option value="">-- Chưa gán chi nhánh --</option>
+              <option value="">-- Chọn chi nhánh --</option>
               {branches.map((branch) => (
                 <option key={branch.id} value={branch.id}>
                   {branch.name}

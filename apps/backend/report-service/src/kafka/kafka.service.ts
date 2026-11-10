@@ -1,22 +1,8 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Inject, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Kafka, Consumer } from 'kafkajs';
 import { PrismaService } from '../prisma/prisma.service';
 import { CustomLogger } from '../common/logger.service';
-
-interface OrderCreatedData {
-  id: string;
-  tableId: string;
-  status: string;
-  totalAmount: number;
-  items: Array<{
-    id: string;
-    menuItemId: string;
-    quantity: number;
-    price: number;
-    note?: string;
-  }>;
-}
 
 interface PaymentCompletedData {
   paymentId: string;

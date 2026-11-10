@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, ForbiddenException, NotFoundException, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, NotFoundException, Logger, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { KafkaService } from '../../kafka/kafka.service';
@@ -344,11 +344,6 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private getOnlineProviderStatusQueryUrl(provider: OnlineProvider) {
-    if (provider === 'SEPAY') return this.sepayQueryUrl;
-    return this.sepayQueryUrl;
-  }
-
   private getHeaderValue(headers: RequestHeaders | undefined, key: string) {
     if (!headers) return '';
     const lowerKey = key.toLowerCase();
@@ -394,10 +389,13 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
     const authHeader = this.getHeaderValue(headers, 'authorization');
     const secretHeader = this.getHeaderValue(headers, 'x-secret-key');
 
-    const isApiKeyMatch = expectedApiKey
-      ? authHeader.toLowerCase() === `apikey ${expectedApiKey}`.toLowerCase()
+    // Constant-time comparisons so the key cannot be recovered by timing the responses.
+    // The "Apikey" scheme name stays case-insensitive; the key itself is compared exactly.
+    const apiKeyMatch = /^apikey\s+(.+)$/i.exec(authHeader);
+    const isApiKeyMatch = expectedApiKey && apiKeyMatch
+      ? this.safeCompare(apiKeyMatch[1].trim(), expectedApiKey)
       : false;
-    const isSecretMatch = expectedSecretKey ? secretHeader === expectedSecretKey : false;
+    const isSecretMatch = expectedSecretKey ? this.safeCompare(secretHeader, expectedSecretKey) : false;
 
     if (this.sepayIpnAuthType === 'apikey') {
       if (!expectedApiKey || !isApiKeyMatch) {
@@ -641,133 +639,6 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
     return fallback;
   }
 
-  private resolveProviderStatusFromPayload(rawPayload: any, paymentAmount: number) {
-    const raw = rawPayload && typeof rawPayload === 'object' ? rawPayload : {};
-    const transactionFound =
-      raw.transactionFound === false ||
-      raw.found === false ||
-      raw.exists === false ||
-      raw.notFound === true ||
-      String(raw.code || '').toUpperCase() === 'NOT_FOUND'
-        ? false
-        : true;
-
-    const amountKeys = ['receivedAmount', 'amountReceived', 'settledAmount', 'paidAmount'];
-    for (const key of amountKeys) {
-      const value = Number(raw[key]);
-      if (Number.isFinite(value) && value >= paymentAmount && transactionFound) {
-        return {
-          status: PaymentStatus.PAID,
-          transactionFound,
-          transactionId: String(raw.transactionId || raw.transId || raw.id || '').trim() || null,
-        };
-      }
-    }
-
-    const paidFlags = [raw.paid, raw.isPaid, raw.success, raw.completed];
-    if (paidFlags.some((flag) => flag === true) && transactionFound) {
-      return {
-        status: PaymentStatus.PAID,
-        transactionFound,
-        transactionId: String(raw.transactionId || raw.transId || raw.id || '').trim() || null,
-      };
-    }
-
-    const candidates = [
-      raw.status,
-      raw.paymentStatus,
-      raw.transactionStatus,
-      raw.resultStatus,
-      raw.state,
-      raw.result,
-      raw.code,
-    ];
-
-    for (const candidate of candidates) {
-      const mapped = this.normalizePaymentStatus(candidate);
-      if (!mapped) continue;
-      if (mapped === PaymentStatus.PAID && !transactionFound) continue;
-      return {
-        status: mapped,
-        transactionFound,
-        transactionId: String(raw.transactionId || raw.transId || raw.id || '').trim() || null,
-      };
-    }
-
-    return {
-      status: PaymentStatus.WAITING_TRANSFER,
-      transactionFound,
-      transactionId: String(raw.transactionId || raw.transId || raw.id || '').trim() || null,
-    };
-  }
-
-  private async verifyWithProviderApi(payment: any, provider: OnlineProvider, transactionIdHint?: string) {
-    const queryUrl = this.getOnlineProviderStatusQueryUrl(provider);
-    if (!queryUrl) {
-      return {
-        status: PaymentStatus.WAITING_TRANSFER,
-        transactionFound: false,
-        transactionId: transactionIdHint || payment.transactionId || null,
-        raw: { reason: 'provider-query-url-not-configured' },
-      };
-    }
-
-    let statusUrl: URL;
-    try {
-      statusUrl = new URL(queryUrl);
-    } catch {
-      return {
-        status: PaymentStatus.WAITING_TRANSFER,
-        transactionFound: false,
-        transactionId: transactionIdHint || payment.transactionId || null,
-        raw: { reason: `invalid-provider-query-url:${queryUrl}` },
-      };
-    }
-
-    statusUrl.searchParams.set('provider', provider);
-    statusUrl.searchParams.set('paymentId', payment.id);
-    statusUrl.searchParams.set('orderId', payment.orderId);
-    statusUrl.searchParams.set('amount', String(Number(payment.amount)));
-    if (payment.transferContent) {
-      statusUrl.searchParams.set('transferContent', String(payment.transferContent));
-    }
-    if (transactionIdHint || payment.transactionId) {
-      statusUrl.searchParams.set('transactionId', String(transactionIdHint || payment.transactionId));
-    }
-
-    try {
-      const response = await this.fetchWithRetry(statusUrl.toString(), { method: 'GET' }, { attempts: 2 });
-      if (!response.ok) {
-        return {
-          status: PaymentStatus.WAITING_TRANSFER,
-          transactionFound: false,
-          transactionId: transactionIdHint || payment.transactionId || null,
-          raw: { reason: `provider-http-${response.status}` },
-        };
-      }
-
-      let payload: any;
-      try {
-        payload = await response.json();
-      } catch {
-        payload = { status: await response.text() };
-      }
-
-      const resolved = this.resolveProviderStatusFromPayload(payload, Number(payment.amount));
-      return {
-        ...resolved,
-        raw: payload,
-      };
-    } catch (error) {
-      return {
-        status: PaymentStatus.WAITING_TRANSFER,
-        transactionFound: false,
-        transactionId: transactionIdHint || payment.transactionId || null,
-        raw: { reason: (error as Error).message || 'provider-request-failed' },
-      };
-    }
-  }
-
   private buildFrontendReturnUrl(provider: 'SEPAY', payload: { orderId: string; transactionId: string; resultCode?: string; message?: string }) {
     const url = new URL(this.paymentReturnBaseUrl);
     url.searchParams.set('provider', provider);
@@ -838,6 +709,8 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
       vietQr: (metadata as any).vietQr || null,
       amountReceived: (metadata as any).amountReceived ?? null,
       changeDue: (metadata as any).changeDue ?? null,
+      underpaid: payment.status !== 'PAID' && (metadata as any).underpaid === true,
+      amountShortfall: (metadata as any).amountShortfall ?? null,
       paidBy,
       customerName: (metadata as any).customerName ?? null,
       expiresAt: (metadata as any).expiresAt ?? null,
@@ -1662,40 +1535,62 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    const provider = this.ensureOnlineProvider(this.normalizeProvider(String(payment.provider)));
-    const verification = await this.verifyWithProviderApi(payment, provider, transactionIdHint);
-    const verificationMetadata = {
+    // A payment only becomes PAID through an authenticated SePay webhook (handleWebhook).
+    // This public verify/refresh path used to ask an unauthenticated provider URL and trust a
+    // loosely parsed reply (e.g. any `success: true`), so it now only reports the current state;
+    // expiry is handled by the local timeout above.
+    return this.updatePaymentStatus(payment.id, currentStatus, payment.transactionId || undefined, {
       ...extraMetadata,
       expiresAt: expiresAt.toISOString(),
       verificationSource: source,
       lastVerificationAt: now.toISOString(),
-      verificationResult: {
-        source: 'provider-api',
-        status: verification.status,
-        transactionFound: verification.transactionFound,
-        raw: verification.raw,
-      },
-    };
+      verificationResult: { source: 'webhook-only', status: currentStatus },
+    });
+  }
 
-    const transactionId = verification.transactionId || transactionIdHint || payment.transactionId || undefined;
-
-    if (verification.status === PaymentStatus.PAID && verification.transactionFound) {
-      return this.updatePaymentStatus(payment.id, PaymentStatus.PAID, transactionId, verificationMetadata);
+  /**
+   * The amount to charge always comes from the order itself (order-service), never from the client:
+   * otherwise a customer could create/re-create a payment for a lower amount and pay only that.
+   * If the order cannot be read, payment creation is refused rather than trusting the client.
+   */
+  private async resolveOrderAmount(orderId: string, clientAmount?: number): Promise<number> {
+    let response: globalThis.Response;
+    try {
+      response = await this.fetchWithRetry(
+        `${this.orderServiceUrl}/api/orders/${encodeURIComponent(orderId)}`,
+        { method: 'GET', headers: { 'x-actor-role': 'ADMIN' } },
+        { attempts: 2 },
+      );
+    } catch (error) {
+      this.logger.error(`Cannot reach order-service to price order ${orderId}: ${(error as Error).message}`);
+      throw new ServiceUnavailableException('Khong the xac dinh so tien don hang, vui long thu lai');
+    }
+    if (response.status === 404) {
+      throw new NotFoundException(`Order ${orderId} not found`);
+    }
+    if (!response.ok) {
+      this.logger.error(`order-service returned ${response.status} while pricing order ${orderId}`);
+      throw new ServiceUnavailableException('Khong the xac dinh so tien don hang, vui long thu lai');
     }
 
-    if (
-      verification.status === PaymentStatus.FAILED ||
-      verification.status === PaymentStatus.EXPIRED ||
-      verification.status === PaymentStatus.CANCELLED
-    ) {
-      return this.updatePaymentStatus(payment.id, verification.status, transactionId, verificationMetadata);
+    const order = (await response.json().catch(() => null)) as { status?: string; totalAmount?: number } | null;
+    if (String(order?.status || '').toUpperCase() === 'CANCELLED') {
+      throw new BadRequestException(`Order ${orderId} has been cancelled`);
+    }
+    const orderAmount = Math.round(Number(order?.totalAmount));
+    if (!Number.isFinite(orderAmount) || orderAmount <= 0) {
+      throw new BadRequestException(`Order ${orderId} has no payable amount`);
     }
 
-    return this.updatePaymentStatus(payment.id, PaymentStatus.WAITING_TRANSFER, transactionId, verificationMetadata);
+    const requested = Math.round(Number(clientAmount));
+    if (Number.isFinite(requested) && requested !== orderAmount) {
+      this.logger.warn(`Ignoring client amount ${requested} for order ${orderId}; using order total ${orderAmount}`);
+    }
+    return orderAmount;
   }
 
   async create(createPaymentDto: CreatePaymentDto) {
-    const { orderId, amount, tableId, customerName } = createPaymentDto;
+    const { orderId, tableId, customerName } = createPaymentDto;
     const branchId = String(createPaymentDto.branchId || '').trim() || null;
     const provider = this.normalizeProvider(createPaymentDto.provider);
 
@@ -1722,6 +1617,7 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
         );
       }
       if (provider === 'SEPAY' && existing.status !== PaymentStatus.PAID) {
+        const amount = await this.resolveOrderAmount(orderId, createPaymentDto.amount);
         const providerPrefix = provider.toLowerCase();
         const transactionId = `${providerPrefix}_${String(orderId).slice(0, 24)}_${Date.now()}`;
         const transferContent = buildUniqueTransferContent(orderId, transactionId);
@@ -1753,6 +1649,8 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
       }
       return this.buildResponse(existing);
     }
+
+    const amount = await this.resolveOrderAmount(orderId, createPaymentDto.amount);
 
     if (provider === 'CASH') {
       const payment = await this.prisma.payment.create({
@@ -1936,19 +1834,86 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
         undefined;
 
       const rawAmount = Number(payload.transferAmount ?? payload.amount ?? 0);
-      const paidAmount = Number.isFinite(rawAmount) ? rawAmount : 0;
-
-      const updated = await this.updatePaymentStatus(payment.id, mappedStatus, transactionId, {
+      const paidAmount = Number.isFinite(rawAmount) ? Math.round(rawAmount) : 0;
+      const baseMetadata = {
         webhookAt: new Date().toISOString(),
-        webhookStatus: mappedStatus,
         webhookRaw: payload,
-        amountReceived: paidAmount > 0 ? paidAmount : undefined,
         payerName: String(payload.accountName || payload.account_name || payload.counterAccountName || '').trim() || undefined,
         verificationSource: 'sepay-ipn',
+      };
+
+      if (mappedStatus !== PaymentStatus.PAID) {
+        const updated = await this.updatePaymentStatus(payment.id, mappedStatus, transactionId, {
+          ...baseMetadata,
+          webhookStatus: mappedStatus,
+        });
+        this.logger.log(`Updated SEPAY payment ${updated.id} to ${updated.status} via webhook ${transactionId || '-'}`);
+        return { success: true, paymentId: updated.id, newStatus: updated.status };
+      }
+
+      // Incoming transfer: only mark PAID once the received total covers the order amount.
+      // Receipts are keyed by SePay transaction id so webhook retries are not double-counted,
+      // and multiple transfers (underpaid, then topped up) accumulate.
+      const currentMetadata =
+        payment.metadata && typeof payment.metadata === 'object' && !Array.isArray(payment.metadata)
+          ? (payment.metadata as Record<string, any>)
+          : {};
+      const previousReceipts =
+        currentMetadata.sepayReceipts && typeof currentMetadata.sepayReceipts === 'object'
+          ? (currentMetadata.sepayReceipts as Record<string, number>)
+          : {};
+      const receiptKey =
+        String(payload.id || payload.transaction_id || payload.referenceCode || '').trim() ||
+        `noid_${paidAmount}_${String(payload.transactionDate || payload.content || '').trim()}`;
+      const receipts = { ...previousReceipts, [receiptKey]: paidAmount };
+      const totalReceived = Object.values(receipts).reduce((sum, value) => sum + (Number(value) || 0), 0);
+      const expectedAmount = Math.round(Number(payment.amount));
+      const isFullyPaid = totalReceived >= expectedAmount;
+      const shortfall = Math.max(expectedAmount - totalReceived, 0);
+      const targetStatus = isFullyPaid ? PaymentStatus.PAID : PaymentStatus.WAITING_TRANSFER;
+
+      // When underpaid, regenerate the QR for the remaining amount only (same transfer content),
+      // so a customer re-scanning does not pay the full amount again.
+      let shortfallQrPatch: Record<string, any> = {};
+      if (!isFullyPaid && payment.transferContent) {
+        const shortfallQr = this.getOnlineQr({ amount: shortfall, transferContent: payment.transferContent });
+        const previousQr =
+          currentMetadata.vietQr && typeof currentMetadata.vietQr === 'object' ? currentMetadata.vietQr : {};
+        shortfallQrPatch = {
+          vietQr: {
+            ...previousQr,
+            qrImageUrl: shortfallQr.qrImageUrl,
+            htmlTag: shortfallQr.htmlTag,
+            transferContent: payment.transferContent,
+          },
+        };
+      }
+
+      const updated = await this.updatePaymentStatus(payment.id, targetStatus, transactionId, {
+        ...baseMetadata,
+        ...shortfallQrPatch,
+        webhookStatus: isFullyPaid ? PaymentStatus.PAID : 'UNDERPAID',
+        sepayReceipts: receipts,
+        amountReceived: totalReceived,
+        amountShortfall: shortfall,
+        underpaid: !isFullyPaid,
       });
 
-      this.logger.log(`Updated SEPAY payment ${updated.id} to ${updated.status} via webhook ${transactionId || '-'}`);
-      return { success: true, paymentId: updated.id, newStatus: updated.status };
+      if (!isFullyPaid) {
+        this.logger.warn(
+          `SEPAY payment ${updated.id} underpaid: received ${totalReceived}/${expectedAmount} (short ${shortfall}) via webhook ${transactionId || '-'}`,
+        );
+      } else {
+        this.logger.log(`Updated SEPAY payment ${updated.id} to ${updated.status} via webhook ${transactionId || '-'} (received ${totalReceived}/${expectedAmount})`);
+      }
+      return {
+        success: true,
+        paymentId: updated.id,
+        newStatus: updated.status,
+        amountReceived: totalReceived,
+        amountExpected: expectedAmount,
+        ...(isFullyPaid ? {} : { underpaid: true, amountShortfall: shortfall }),
+      };
     }
 
     const legacyWebhook = webhookDto as WebhookDto;

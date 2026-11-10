@@ -208,7 +208,7 @@ export default function Settings() {
       setProfileForm((prev) => ({ ...prev, avatarUrl }))
       updateUser({
         avatarUrl: avatarUrl || null,
-        avatar: avatarUrl || null,
+        avatar: avatarUrl || undefined,
       })
       toast.success('Đã upload ảnh đại diện và lưu vào DB')
     } catch (error: any) {

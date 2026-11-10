@@ -53,59 +53,26 @@ async function upsertIngredient(item) {
     return { created: true, updated: false };
   }
 
-  const currentStock = Number(existing.stock || 0);
-  const targetStock = Number(item.stock || 0);
-  const nextStock = currentStock >= targetStock ? currentStock : targetStock;
-
-  await prisma.ingredient.update({
-    where: { id: item.id },
-    data: {
-      name: item.name,
-      unit: item.unit,
-      minStock: item.minStock,
-      importPrice: item.importPrice,
-      stock: nextStock,
-      isActive: true,
-    },
-  });
-
-  if (nextStock > currentStock) {
-    const delta = nextStock - currentStock;
-    await prisma.stockMovement.create({
-      data: {
-        ingredientId: item.id,
-        type: StockType.IMPORT,
-        source: StockSource.SYSTEM,
-        quantity: delta,
-        unitPrice: item.importPrice,
-        totalPrice: delta * item.importPrice,
-        reason: 'Seed top-up',
-        note: 'Top-up to required baseline stock',
-        referenceCode: `SEED-TOPUP-${item.id.toUpperCase()}`,
-        beforeStock: currentStock,
-        afterStock: nextStock,
-        createdBy: 'seed-script',
-      },
-    });
-  }
-
-  return { created: false, updated: true };
+  // Seed only initializes missing ingredients. An existing ingredient's stock, min stock, import price
+  // and active flag are real shop data: this script runs on every container start, so "topping up"
+  // stock here created phantom imports and silently reset the shop's settings.
+  return { created: false, updated: false };
 }
 
 async function main() {
   let created = 0;
-  let updated = 0;
+  let skipped = 0;
 
   for (const item of ingredients) {
     const result = await upsertIngredient(item);
     if (result.created) {
       created += 1;
-    } else if (result.updated) {
-      updated += 1;
+    } else {
+      skipped += 1;
     }
   }
 
-  console.log(`Seeded inventory ingredients: created=${created}, updated=${updated}`);
+  console.log(`Seeded inventory ingredients: created=${created}, kept existing=${skipped}`);
 }
 
 main()

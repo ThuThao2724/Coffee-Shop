@@ -16,5 +16,9 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/package*.json ./
 RUN npx prisma generate
+# Run as the unprivileged user shipped with the node image (this service writes nothing to disk).
+# The file logger writes to ./logs: create it for the unprivileged user.
+RUN mkdir -p /app/logs && chown node:node /app/logs
+USER node
 EXPOSE 3006
 CMD ["node", "dist/src/main.js"]

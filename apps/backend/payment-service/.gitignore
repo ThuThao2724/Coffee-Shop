@@ -6,7 +6,7 @@
 .pnp.js
 
 # Prisma
-/prisma/migrations
+# prisma/migrations is versioned: services start with "prisma migrate deploy"
 /prisma/dev.db
 
 # testing

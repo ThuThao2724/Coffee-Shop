@@ -49,6 +49,15 @@ public class BranchManagementController {
         return ResponseEntity.ok(userService.getBranch(extractToken(authHeader), id));
     }
 
+    /** Internal (service-to-service) branch display info; requires the internal service token. */
+    @GetMapping("/{id}/display-info")
+    public ResponseEntity<Map<String, Object>> getBranchDisplayInfo(
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @PathVariable("id") String id
+    ) {
+        return ResponseEntity.ok(userService.getBranchDisplayInfo(extractToken(authHeader), id));
+    }
+
     @PostMapping
     public ResponseEntity<BranchResponse> createBranch(
             @RequestHeader("Authorization") String authHeader,

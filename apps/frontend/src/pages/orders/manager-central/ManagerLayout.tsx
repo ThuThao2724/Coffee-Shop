@@ -32,7 +32,7 @@ export default function ManagerLayout({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-[32px] font-bold leading-tight tracking-[-0.02em] text-[#291806] sm:text-[38px]">Coffee Shop POS</p>
-            <p className="text-sm text-[#4e453d]">Manager Central · {branchLabel} · {roleLabel}</p>
+            <p className="text-sm text-[#4e453d]">📍 {branchLabel} · {roleLabel}</p>
           </div>
           <div className="flex items-center gap-2">
             <span className="inline-flex min-h-12 items-center gap-2 rounded-full border border-[#d2c4ba] bg-white px-4 text-sm font-semibold text-[#33210d]">

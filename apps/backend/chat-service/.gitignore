@@ -50,7 +50,7 @@ typings/
 .node_repl_history
 
 # Prisma
-/prisma/migrations
+# prisma/migrations is versioned: services start with "prisma migrate deploy"
 /prisma/dev.db
 
 # Env files

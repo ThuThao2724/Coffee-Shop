@@ -5,7 +5,7 @@ import { ManagerCustomCartLine, ManagerMenuItem, ManagerTable } from './managerT
 interface CreateOrderPanelProps {
   selectedTableId: string
   setSelectedTableId: (value: string) => void
-  tableSelectRef: RefObject<HTMLSelectElement | null>
+  tableSelectRef: RefObject<HTMLSelectElement>
   tables: ManagerTable[]
   quickItems: ManagerMenuItem[]
   menuItems: ManagerMenuItem[]

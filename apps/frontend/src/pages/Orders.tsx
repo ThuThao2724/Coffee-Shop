@@ -5,8 +5,9 @@ import Button from '@/components/ui/Button'
 import api from '@/utils/api'
 import { PaymentMethod } from '@/types'
 import { useI18n } from '@/utils/i18n'
-import { maDonHangNgan, phuongThucThanhToan, trangThaiDonHang, trangThaiThanhToan } from '@/utils/display'
+import { maDonHangNgan, phuongThucThanhToan, trangThaiDonHang, trangThaiThanhToan, vaiTroNhanVien } from '@/utils/display'
 import { useBranchScopeStore } from '@/stores/branchScopeStore'
+import { useBranchName } from '@/hooks/useBranchName'
 import { clearPosMenuCache, readPosMenuCache, writePosMenuCache } from '@/utils/posMenuCache'
 import { readPosOfflineQueue, writePosOfflineQueue } from '@/utils/posOfflineQueue'
 import { disconnectSocket, getSocket } from '@/utils/socket'
@@ -55,13 +56,44 @@ interface OrderApi {
   promotionCode?: string | null
   totalAmount: number
   createdAt: string
+  updatedAt?: string | null
   orderItems: OrderItemApi[]
+}
+
+// Staff-side item customization (size / toppings / note), same shape as the customer menu uses.
+interface CustomizationOption {
+  value: string
+  label: string
+  priceDelta?: number
+}
+
+interface CustomizationGroup {
+  id: string
+  label: string
+  type: 'single' | 'multi' | 'text'
+  options?: CustomizationOption[]
+  placeholder?: string
+}
+
+interface StaffSelectedOptions {
+  size?: { name: string; priceModifier: number }
+  toppings?: Array<{ name: string; priceModifier: number }>
+  note?: string
+}
+
+interface CustomCartLine {
+  localId: string
+  menuItemId: string
+  menuItemName: string
+  quantity: number
+  selectedOptions: StaffSelectedOptions
 }
 
 interface PaymentApi {
   paymentId: string
   orderId: string
   tableId?: string | null
+  transactionId?: string | null
   amount: number
   status: 'PENDING' | 'WAITING_TRANSFER' | 'WAITING_CASH' | 'PAID' | 'FAILED' | 'EXPIRED' | 'CANCELLED'
   provider: 'CASH' | 'SEPAY'
@@ -75,6 +107,8 @@ interface PaymentApi {
   } | null
   amountReceived?: number | null
   changeDue?: number | null
+  underpaid?: boolean
+  amountShortfall?: number | null
   paidBy?: string | null
   customerName?: string | null
   paidAt?: string | null
@@ -156,7 +190,7 @@ const fallbackOrderItemName = (menuItemId?: string | null) => {
 function normalizeCustomizations(raw: unknown): CustomizationGroup[] {
   if (!Array.isArray(raw)) return []
   return raw
-    .map((entry: any) => ({
+    .map((entry: any): CustomizationGroup => ({
       id: String(entry?.id || ''),
       label: String(entry?.label || ''),
       type: entry?.type === 'multi' ? 'multi' : 'single',
@@ -249,7 +283,7 @@ export default function Orders() {
   const [offlineQueue, setOfflineQueue] = useState<OfflineOrderQueueItem[]>([])
   const [syncingOfflineQueue, setSyncingOfflineQueue] = useState(false)
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
-  const [cartHistory, setCartHistory] = useState<Record<string, number>[]>([])
+  const [, setCartHistory] = useState<Record<string, number>[]>([])
   const [customCartLines, setCustomCartLines] = useState<CustomCartLine[]>([])
   const [customizingItem, setCustomizingItem] = useState<MenuItemApi | null>(null)
   const [customSize, setCustomSize] = useState('')
@@ -263,6 +297,7 @@ export default function Orders() {
   const [autoPrintInvoiceAfterPaid, setAutoPrintInvoiceAfterPaid] = useState(true)
   const notifSyncKey = useMemo(() => `notif_last_received_at_${String(user?.id || 'guest')}`, [user?.id])
   const normalizedRole = String(user?.role || '').toUpperCase()
+  const selectedBranchName = useBranchName(selectedBranchId)
   const canManagePosAdvanced = normalizedRole === 'ADMIN' || normalizedRole === 'MANAGER'
   const lastPrintedPaymentRef = useRef<string | null>(null)
   const processedRealtimeIdsRef = useRef<Record<string, number>>({})
@@ -584,7 +619,7 @@ export default function Orders() {
 
     const onNotificationBatch = (batch: StaffNotificationPayload[]) => {
       if (!Array.isArray(batch) || batch.length === 0) return
-      const latest = batch.at(-1)?.createdAt
+      const latest = batch[batch.length - 1]?.createdAt
       if (typeof window !== 'undefined' && latest) {
         localStorage.setItem(notifSyncKey, latest)
       }
@@ -1323,8 +1358,8 @@ export default function Orders() {
   return (
     <div className="space-y-4 sm:space-y-5">
       <ManagerLayout
-        branchLabel={selectedBranchId || 'Toàn hệ thống'}
-        roleLabel={normalizedRole || 'N/A'}
+        branchLabel={selectedBranchId ? selectedBranchName || 'Đang tải chi nhánh...' : 'Toàn hệ thống'}
+        roleLabel={vaiTroNhanVien(normalizedRole) || 'N/A'}
         isLive={isOnline}
         onRefresh={() => {
           clearPosMenuCache(selectedBranchId || undefined)
@@ -1507,6 +1542,16 @@ export default function Orders() {
                 {createdPayment.provider === 'SEPAY' && createdPayment.vietQr?.qrImageUrl && (
                   <div className="mt-2 rounded border border-amber-200 bg-white p-2">
                     <p className="mb-2 text-xs text-slate-600">Khách quét mã QR để chuyển khoản</p>
+                    {createdPayment.underpaid && (
+                      <div className="mb-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+                        Khách chuyển thiếu: đã nhận{' '}
+                        <span className="font-semibold">{Number(createdPayment.amountReceived || 0).toLocaleString()}đ</span>
+                        {' / '}
+                        {Number(createdPayment.amount || 0).toLocaleString()}đ · còn thiếu{' '}
+                        <span className="font-semibold">{Number(createdPayment.amountShortfall || 0).toLocaleString()}đ</span>.
+                        {' '}Mã QR bên dưới đã đổi sang số tiền còn thiếu.
+                      </div>
+                    )}
                     <img
                       src={createdPayment.vietQr.qrImageUrl}
                       alt="SePay QR"

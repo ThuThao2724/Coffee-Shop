@@ -127,8 +127,9 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
+    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER']);
     return this.orderService.activateBranchMenuItem(branchId, itemId, body || {}, {
-      role: actorRole,
+      role,
       branchId: actorBranchId,
     });
   }
@@ -141,8 +142,9 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
+    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER']);
     return this.orderService.updateBranchMenuItem(branchId, itemId, body || {}, {
-      role: actorRole,
+      role,
       branchId: actorBranchId,
     });
   }
@@ -155,7 +157,8 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
-    return this.orderService.removeBranchMenuItem(branchId, itemId, { role: actorRole, branchId: actorBranchId });
+    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER']);
+    return this.orderService.removeBranchMenuItem(branchId, itemId, { role, branchId: actorBranchId });
   }
 
   // ── Admin Menu Management (M-04..M-06) ──────────────────
@@ -342,7 +345,7 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
-    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'BARISTA']);
+    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'BARISTA', 'STAFF']);
     this.assertBranchScope(role, actorBranchId, branchId || actorBranchId);
     return this.orderService.findAll({ tableId, status, dateFrom, dateTo, branchId });
   }
@@ -357,7 +360,7 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
-    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'BARISTA']);
+    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'BARISTA', 'STAFF']);
     this.assertBranchScope(role, actorBranchId, branchId);
     return this.orderService.findByBranch(branchId, { tableId, status, dateFrom, dateTo });
   }
@@ -439,7 +442,7 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
-    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'BARISTA']);
+    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'BARISTA', 'STAFF']);
     this.assertBranchScope(role, actorBranchId, branchId);
     return this.orderService.findOneByBranch(branchId, orderId);
   }
@@ -462,7 +465,7 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
-    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'BARISTA']);
+    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'BARISTA', 'STAFF']);
     await this.assertOrderScope(role, actorBranchId, id);
     const order = await this.orderService.findOne(id) as any;
     return {
@@ -479,7 +482,7 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
-    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER']);
+    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'STAFF']);
     await this.assertOrderScope(role, actorBranchId, id);
     return this.orderService.updateOrderItems(id, dto);
   }
@@ -490,7 +493,7 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
-    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'BARISTA']);
+    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'BARISTA', 'STAFF']);
     await this.assertOrderScope(role, actorBranchId, id);
     const order = await this.orderService.findOne(id) as any;
     return order?.orderItems || [];
@@ -503,7 +506,7 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
-    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER']);
+    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'STAFF']);
     await this.assertOrderScope(role, actorBranchId, id);
     const order = await this.orderService.findOne(id) as any;
     const mergedItems = [...(order?.orderItems || []), ...(dto?.items || [])].map((item: any) => ({
@@ -523,7 +526,7 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
-    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER']);
+    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'STAFF']);
     await this.assertOrderScope(role, actorBranchId, id);
     const order = await this.orderService.findOne(id) as any;
     const mapped = (order?.orderItems || []).map((item: any) =>
@@ -551,7 +554,7 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
-    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER']);
+    const role = this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'STAFF']);
     await this.assertOrderScope(role, actorBranchId, id);
     const order = await this.orderService.findOne(id) as any;
     const mapped = (order?.orderItems || [])

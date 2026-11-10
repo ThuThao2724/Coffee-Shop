@@ -806,10 +806,36 @@ public class UserService {
     }
 
     public BranchResponse getBranch(String token, String branchId) {
-        User actor = requireManagerOrAdmin(token);
+        // Any staff member may read their own branch (to show its name in the UI);
+        // assertCanAccessBranch below still limits non-admins to their own branch.
+        User actor = requireUserFromToken(token);
+        if (!STAFF_ROLES.contains(actor.getRole())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Chi danh cho tai khoan nhan vien");
+        }
         Branch branch = requireBranchById(branchId);
         assertCanAccessBranch(actor, branch.getId());
         return toBranchResponse(branch);
+    }
+
+    /**
+     * Service-to-service lookup of a branch's display info (name/address), e.g. so order-service can
+     * show the branch name on the customer QR menu. Guarded by the shared internal service token.
+     */
+    public Map<String, Object> getBranchDisplayInfo(String token, String branchId) {
+        String expected = String.valueOf(internalServiceToken == null ? "" : internalServiceToken).trim();
+        String provided = String.valueOf(token == null ? "" : token).trim();
+        if (expected.isEmpty() || !java.security.MessageDigest.isEqual(
+                expected.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                provided.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Internal service token khong hop le");
+        }
+        Branch branch = requireBranchById(branchId);
+        Map<String, Object> info = new java.util.LinkedHashMap<>();
+        info.put("id", branch.getId());
+        info.put("name", branch.getName());
+        info.put("address", branch.getAddress());
+        info.put("isActive", branch.getIsActive());
+        return info;
     }
 
     public BranchResponse createBranch(String token, BranchCreateRequest req) {
@@ -1074,8 +1100,10 @@ public class UserService {
             reportServiceUrl = "http://report-service:3006";
         }
 
+        // report-service exposes /api/reports/revenue (there is no "revenue-summary") and requires the
+        // caller's JWT; it also enforces the caller's branch scope itself.
         StringBuilder url = new StringBuilder(reportServiceUrl)
-                .append("/api/reports/revenue-summary?branchId=")
+                .append("/api/reports/revenue?branchId=")
                 .append(URLEncoder.encode(branch.getId(), StandardCharsets.UTF_8));
         String normalizedFrom = normalizeNullableText(dateFrom);
         String normalizedTo = normalizeNullableText(dateTo);
@@ -1089,6 +1117,7 @@ public class UserService {
         HttpRequest httpRequest = HttpRequest.newBuilder()
                 .uri(URI.create(url.toString()))
                 .header("Accept", "application/json")
+                .header("Authorization", "Bearer " + token)
                 .GET()
                 .build();
         try {

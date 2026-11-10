@@ -50,10 +50,10 @@ AI_SENTIMENT_GEMINI_TIMEOUT_MS = int(os.getenv("AI_SENTIMENT_GEMINI_TIMEOUT_MS",
 AI_SENTIMENT_QUALITY_LOOKBACK_HOURS = int(os.getenv("AI_SENTIMENT_QUALITY_LOOKBACK_HOURS", "24"))
 
 DEFAULT_MENU_KB = [
-    {"keyword": "cÃ  phÃª", "answer": "NhÃ³m cÃ  phÃª Ä‘ang cÃ³ cÃ¡c mÃ³n truyá»n thá»‘ng, latte, cappuccino vÃ  espresso."},
-    {"keyword": "trÃ ", "answer": "NhÃ³m trÃ  cÃ³ nhiá»u lá»±a chá»n trÃ¡i cÃ¢y vÃ  trÃ  sá»¯a theo chi nhÃ¡nh."},
-    {"keyword": "giá» má»Ÿ cá»­a", "answer": "QuÃ¡n má»Ÿ cá»­a tá»« 07:00 Ä‘áº¿n 22:00 hÃ ng ngÃ y."},
-    {"keyword": "khuyáº¿n mÃ£i", "answer": "Báº¡n cÃ³ thá»ƒ xem khuyáº¿n mÃ£i Ä‘ang cháº¡y á»Ÿ má»¥c Khuyáº¿n mÃ£i theo chi nhÃ¡nh."},
+    {"keyword": "cà phê", "answer": "Nhóm cà phê đang có các món truyền thống, latte, cappuccino và espresso."},
+    {"keyword": "trà", "answer": "Nhóm trà có nhiều lựa chọn trái cây và trà sữa theo chi nhánh."},
+    {"keyword": "giờ mở cửa", "answer": "Quán mở cửa từ 07:00 đến 22:00 hàng ngày."},
+    {"keyword": "khuyến mãi", "answer": "Bạn có thể xem khuyến mãi đang chạy ở mục Khuyến mãi theo chi nhánh."},
 ]
 
 POSITIVE_WORD_WEIGHTS: dict[str, float] = {
@@ -277,8 +277,12 @@ def authorize_request(
     if role not in allowed_roles:
         raise HTTPException(status_code=403, detail="Insufficient role for this endpoint")
 
-    if role == "MANAGER" and branch_id and actor_branch_id and actor_branch_id != branch_id:
-        raise HTTPException(status_code=403, detail="Manager cannot access other branch scope")
+    if role != "ADMIN":
+        # Non-admins are bound to their own branch: a missing branch claim no longer skips the check.
+        if not actor_branch_id:
+            raise HTTPException(status_code=403, detail="Missing branch scope for this role")
+        if branch_id and actor_branch_id != branch_id:
+            raise HTTPException(status_code=403, detail="Manager cannot access other branch scope")
 
     return {"role": role, "branchId": actor_branch_id, "userId": actor_user_id}
 
@@ -743,8 +747,65 @@ def execute_sql_with_url(database_url: str, sql: str, params: list[Any] | None =
     normalized = sanitize_sql(sql)
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
+            # Defense in depth: these queries are SELECT-only by contract; make the database enforce it.
+            cur.execute("SET TRANSACTION READ ONLY")
             cur.execute(f"SET LOCAL statement_timeout = '{CHATBOT_SQL_TIMEOUT_MS}ms'")
             cur.execute(normalized, params or [])
+            rows = cur.fetchmany(CHATBOT_MAX_ROWS)
+            cols = [d.name for d in cur.description] if cur.description else []
+    return [{cols[idx]: row[idx] for idx in range(len(cols))} for row in rows]
+
+
+# LLM-written SQL runs as this NOLOGIN role (via SET LOCAL ROLE), which can only SELECT the report
+# tables Gemini is told about. The service connection itself is privileged, so without this a
+# crafted question could reach system catalogs or server-side file functions.
+UNTRUSTED_SQL_ROLE = os.getenv("AI_UNTRUSTED_SQL_ROLE", "ai_report_reader").strip() or "ai_report_reader"
+_untrusted_role_ready = False
+
+
+def ensure_untrusted_sql_role() -> bool:
+    """Create/refresh the read-only role on the report database (idempotent). Returns True when usable."""
+    global _untrusted_role_ready
+    if _untrusted_role_ready:
+        return True
+    if not REPORT_DATABASE_URL or not re.fullmatch(r"[a-z_][a-z0-9_]*", UNTRUSTED_SQL_ROLE):
+        return False
+    try:
+        with psycopg.connect(REPORT_DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM pg_roles WHERE rolname = %s", [UNTRUSTED_SQL_ROLE]
+                )
+                if cur.fetchone() is None:
+                    cur.execute(f'CREATE ROLE "{UNTRUSTED_SQL_ROLE}" NOLOGIN NOSUPERUSER NOINHERIT')
+                cur.execute(f'GRANT USAGE ON SCHEMA public TO "{UNTRUSTED_SQL_ROLE}"')
+                cur.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ANY(%s)",
+                    [sorted(GEMINI_SQL_ALLOWED_TABLES)],
+                )
+                for (table_name,) in cur.fetchall():
+                    cur.execute(f'GRANT SELECT ON TABLE public."{table_name}" TO "{UNTRUSTED_SQL_ROLE}"')
+            conn.commit()
+        _untrusted_role_ready = True
+        return True
+    except Exception as error:  # pylint: disable=broad-except
+        print(f"[ai-service] cannot prepare role {UNTRUSTED_SQL_ROLE}: {error}")
+        return False
+
+
+def execute_untrusted_report_sql(sql: str) -> list[dict[str, Any]]:
+    """Run LLM-generated SQL with least privilege; refuses to run rather than falling back to the privileged role."""
+    if not REPORT_DATABASE_URL:
+        return []
+    if not ensure_untrusted_sql_role():
+        raise RuntimeError("untrusted SQL role is not available")
+    normalized = sanitize_sql(sql)
+    with psycopg.connect(REPORT_DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SET TRANSACTION READ ONLY")
+            cur.execute(f'SET LOCAL ROLE "{UNTRUSTED_SQL_ROLE}"')
+            cur.execute(f"SET LOCAL statement_timeout = '{CHATBOT_SQL_TIMEOUT_MS}ms'")
+            cur.execute(normalized, [])
             rows = cur.fetchmany(CHATBOT_MAX_ROWS)
             cols = [d.name for d in cur.description] if cur.description else []
     return [{cols[idx]: row[idx] for idx in range(len(cols))} for row in rows]
@@ -833,10 +894,10 @@ def get_cooccurrence_items(branch_id: str, cart_item_ids: list[str], limit: int)
 
 def normalize_text_for_sentiment(text: str) -> str:
     value = str(text or "").lower()
-    value = value.replace("khÃ´ng", "khong").replace("hÃ i lÃ²ng", "hailong")
-    value = value.replace("thÃ¡i Ä‘á»™", "thai_do").replace("háº¿t mÃ³n", "het_mon")
-    value = value.replace("chá» lÃ¢u", "cho_lau").replace("khÃ³ phá»¥c vá»¥", "khophucvu")
-    value = re.sub(r"[^a-z0-9Ã€-á»¹Ã -á»¹_\s]", " ", value)
+    value = value.replace("không", "khong").replace("hài lòng", "hailong")
+    value = value.replace("thái độ", "thai_do").replace("hết món", "het_mon")
+    value = value.replace("chờ lâu", "cho_lau").replace("khó phục vụ", "khophucvu")
+    value = re.sub(r"[^a-z0-9À-ỹà-ỹ_\s]", " ", value)
     value = re.sub(r"\s+", " ", value).strip()
     return value
 
@@ -1178,9 +1239,14 @@ def build_revenue_forecast_from_history(branch_id: str, days: int) -> tuple[list
         )
         model.fit(df[["ds", "y"]])
 
-        future = model.make_future_dataframe(periods=days, freq="D")
+        today_vn = datetime.now(timezone(timedelta(hours=7))).date()
+        last_date = df["ds"].max().date()
+        gap = (today_vn - last_date).days
+        periods = max(days, gap + days - 1)
+        future = model.make_future_dataframe(periods=periods, freq="D")
         forecast_df = model.predict(future)
-        result = forecast_df[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(days).reset_index(drop=True)
+        forecast_df = forecast_df[forecast_df["ds"].dt.date >= today_vn]
+        result = forecast_df[["ds", "yhat", "yhat_lower", "yhat_upper"]].head(days).reset_index(drop=True)
 
         mape_value = None
         holdout_size = max(3, int(len(df) * 0.2))
@@ -1502,6 +1568,138 @@ def _forecast_weather_impl(branchId: str, lat: float, lon: float, rainMm: float)
     }
 
 
+@app.get("/api/ai/forecast/ingredients")
+def forecast_ingredients(branchId: str, days: int = 7, weeks: int = 12, buffer: float = 0.15):
+    if not ORDER_DATABASE_URL:
+        raise HTTPException(status_code=503, detail="ORDER_DATABASE_URL is not configured")
+    inv_url = os.getenv("INVENTORY_DATABASE_URL", "").strip() or ORDER_DATABASE_URL.replace("/orderdb", "/inventorydb")
+    if inv_url == ORDER_DATABASE_URL:
+        raise HTTPException(status_code=503, detail="Khong xac dinh duoc INVENTORY_DATABASE_URL")
+    days = max(1, min(days, 14))
+    weeks = max(2, min(weeks, 26))
+    buffer = max(0.0, min(buffer, 0.5))
+    lookback = weeks * 7
+
+    qty_rows = execute_sql_with_url(
+        ORDER_DATABASE_URL,
+        """
+        SELECT EXTRACT(DOW FROM o."createdAt")::int AS dow,
+               oi."menuItemId" AS id,
+               COALESCE(SUM(oi.quantity), 0)::int AS qty
+        FROM orders o
+        JOIN order_items oi ON oi."orderId" = o.id
+        WHERE o."branchId" = %s AND o.status::text = 'COMPLETED'
+          AND o."createdAt" >= (CURRENT_DATE - (%s::int || ' days')::interval)
+        GROUP BY 1, 2
+        """,
+        [branchId, lookback],
+    )
+    day_rows = execute_sql_with_url(
+        ORDER_DATABASE_URL,
+        """
+        SELECT EXTRACT(DOW FROM o."createdAt")::int AS dow,
+               COUNT(DISTINCT o."createdAt"::date)::int AS days
+        FROM orders o
+        WHERE o."branchId" = %s AND o.status::text = 'COMPLETED'
+          AND o."createdAt" >= (CURRENT_DATE - (%s::int || ' days')::interval)
+        GROUP BY 1
+        """,
+        [branchId, lookback],
+    )
+    recipe_rows = execute_sql_with_url(
+        ORDER_DATABASE_URL,
+        """
+        SELECT r."menuItemId" AS menu_id, r."ingredientId" AS ing,
+               r."ingredientName" AS name, r.quantity AS qty, r.unit AS unit
+        FROM menu_item_ingredients r
+        """,
+        [],
+    )
+    menu_rows = execute_sql_with_url(ORDER_DATABASE_URL, "SELECT id, name FROM menu_items", [])
+    stock_rows = execute_sql_with_url(
+        inv_url,
+        """SELECT id, name, unit, stock, "minStock" AS min_stock FROM ingredients""",
+        [],
+    )
+
+    qty_map = {(int(r["dow"]), str(r["id"])): float(r["qty"] or 0) for r in qty_rows}
+    days_map = {int(r["dow"]): int(r["days"] or 0) for r in day_rows}
+    menu_names = {str(r["id"]): str(r["name"]) for r in menu_rows}
+    recipes: dict = {}
+    for r in recipe_rows:
+        recipes.setdefault(str(r["menu_id"]), []).append(
+            (str(r["ing"]), str(r.get("name") or r["ing"]), decimal_from_any(r.get("qty"), 0.0), str(r.get("unit") or ""))
+        )
+    stock_map = {str(r["id"]): r for r in stock_rows}
+
+    today = datetime.now(timezone(timedelta(hours=7))).date()
+    dates = [today + timedelta(days=i) for i in range(days)]
+    usage: dict = {}
+    daily_cups = [0.0] * days
+    for idx, d in enumerate(dates):
+        pg_dow = (d.weekday() + 1) % 7
+        n = days_map.get(pg_dow, 0)
+        if n < 1:
+            continue
+        for (dw, mid), q in qty_map.items():
+            if dw != pg_dow:
+                continue
+            cups = q / n
+            daily_cups[idx] += cups
+            for ing, name, rq, unit in recipes.get(mid, []):
+                u = usage.setdefault(ing, {"name": name, "unit": unit, "daily": [0.0] * days})
+                u["daily"][idx] += cups * rq
+
+    missing = sorted({menu_names.get(mid, mid) for (_, mid) in qty_map if mid not in recipes})
+
+    items = []
+    for ing, u in usage.items():
+        st = stock_map.get(ing)
+        daily = u["daily"]
+        need = sum(daily)
+        if st is None:
+            items.append({
+                "id": ing, "name": u["name"], "unit": u["unit"], "stock": None, "minStock": None,
+                "need": round(need, 2), "toOrder": None, "status": "unknown",
+                "lowDate": None, "outDate": None, "unitMismatch": False,
+                "daily": [round(x, 3) for x in daily],
+            })
+            continue
+        stock = decimal_from_any(st.get("stock"), 0.0)
+        minimum = decimal_from_any(st.get("min_stock"), 0.0)
+        target = need * (1 + buffer) + minimum
+        to_order = max(0.0, target - stock)
+        running = stock
+        low_date = None
+        out_date = None
+        for idx, v in enumerate(daily):
+            running -= v
+            if out_date is None and running <= 0:
+                out_date = dates[idx].isoformat()
+            if low_date is None and running < minimum:
+                low_date = dates[idx].isoformat()
+        status = "out" if out_date else "low" if low_date else "reorder" if to_order > 0 else "ok"
+        items.append({
+            "id": ing, "name": u["name"], "unit": u["unit"],
+            "stock": round(stock, 2), "minStock": round(minimum, 2),
+            "need": round(need, 2), "toOrder": round(to_order, 2), "status": status,
+            "lowDate": low_date, "outDate": out_date,
+            "unitMismatch": str(st.get("unit") or "") != u["unit"],
+            "daily": [round(x, 3) for x in daily],
+        })
+    order = {"out": 0, "low": 1, "reorder": 2, "unknown": 3, "ok": 4}
+    items.sort(key=lambda x: (order.get(x["status"], 9), x["name"]))
+    return {
+        "branchId": branchId,
+        "dates": [d.isoformat() for d in dates],
+        "dailyCups": [round(x) for x in daily_cups],
+        "weeks": weeks,
+        "buffer": buffer,
+        "missingRecipes": missing,
+        "ingredients": items,
+    }
+
+
 def top_negative_issues(texts: list[str], limit: int = 3) -> list[dict[str, Any]]:
     topic_counts: dict[str, int] = {key: 0 for key in ISSUE_TOPIC_KEYWORDS.keys()}
     fallback_token_counts: dict[str, int] = {}
@@ -1563,6 +1761,7 @@ async def forecast_cron_loop():
 @app.on_event("startup")
 async def startup_tasks():
     reload_knowledge_base(source="startup")
+    ensure_untrusted_sql_role()
     init_recommend_ab_event_store()
     if AI_FORECAST_CRON_ENABLED:
         asyncio.create_task(forecast_cron_loop())
@@ -1572,16 +1771,16 @@ def map_question_to_sql(question: str, branch_id: str | None) -> str:
     q = question.lower()
     where = 'WHERE "branchId" = %s' if branch_id else ""
 
-    if "doanh thu" in q and ("hÃ´m nay" in q or "hom nay" in q):
+    if "doanh thu" in q and ("hôm nay" in q or "hom nay" in q):
         return (
             f'SELECT COALESCE(SUM("predictedRevenue"), 0) AS revenue FROM sales_forecast {where} '
             f'{"AND" if where else "WHERE"} "forecastDate"::date = CURRENT_DATE'
         )
-    if "mÃ³n" in q and ("bÃ¡n cháº¡y" in q or "ban chay" in q):
+    if "món" in q and ("bán chạy" in q or "ban chay" in q):
         return f'SELECT "menuItemId", SUM(quantity)::int AS qty FROM item_sales {where} GROUP BY "menuItemId" ORDER BY qty DESC LIMIT 10'
-    if "báº¥t thÆ°á»ng" in q or "canh bao" in q or "cáº£nh bÃ¡o" in q:
+    if "bất thường" in q or "canh bao" in q or "cảnh báo" in q:
         return f'SELECT id, "alertType", severity, description, "isResolved", "detectedAt" FROM anomaly_alert {where} ORDER BY "detectedAt" DESC LIMIT 20'
-    if "cáº£m xÃºc" in q or "cam xuc" in q or "sentiment" in q:
+    if "cảm xúc" in q or "cam xuc" in q or "sentiment" in q:
         return f'SELECT label, COUNT(*)::int AS count FROM sentiment_analysis {where} GROUP BY label ORDER BY label'
 
     return f'SELECT "forecastDate", "predictedRevenue", "confidenceLow", "confidenceHigh" FROM sales_forecast {where} ORDER BY "forecastDate" DESC LIMIT 7'
@@ -1591,30 +1790,30 @@ def infer_report_intent(question: str) -> str:
     q = question.lower()
     if "doanh thu" in q:
         return "REVENUE_QUERY"
-    if "mÃ³n" in q and ("bÃ¡n cháº¡y" in q or "ban chay" in q):
+    if "món" in q and ("bán chạy" in q or "ban chay" in q):
         return "TOP_ITEMS_QUERY"
-    if "báº¥t thÆ°á»ng" in q or "cáº£nh bÃ¡o" in q or "canh bao" in q:
+    if "bất thường" in q or "cảnh báo" in q or "canh bao" in q:
         return "ANOMALY_QUERY"
-    if "cáº£m xÃºc" in q or "sentiment" in q or "cam xuc" in q:
+    if "cảm xúc" in q or "sentiment" in q or "cam xuc" in q:
         return "SENTIMENT_QUERY"
     return "GENERAL_QUERY"
 
 
 def summarize_sql_result(intent: str, rows: list[dict[str, Any]]) -> str:
     if not rows:
-        return "KhÃ´ng tÃ¬m tháº¥y dá»¯ liá»‡u phÃ¹ há»£p trong pháº¡m vi cÃ¢u há»i."
+        return "Không tìm thấy dữ liệu phù hợp trong phạm vi câu hỏi."
     if intent == "REVENUE_QUERY":
         revenue = decimal_from_any(rows[0].get("revenue"), 0)
-        return f"Doanh thu Æ°á»›c tÃ­nh theo dá»¯ liá»‡u hiá»‡n cÃ³ lÃ  {int(revenue):,}Ä‘."
+        return f"Doanh thu ước tính theo dữ liệu hiện có là {int(revenue):,}đ."
     if intent == "TOP_ITEMS_QUERY":
         top = rows[0]
-        return f"MÃ³n dáº«n Ä‘áº§u hiá»‡n táº¡i lÃ  {top.get('menuItemId', 'N/A')} vá»›i sá»‘ lÆ°á»£ng {top.get('qty', 0)}."
+        return f"Món dẫn đầu hiện tại là {top.get('menuItemId', 'N/A')} với số lượng {top.get('qty', 0)}."
     if intent == "ANOMALY_QUERY":
-        return f"CÃ³ {len(rows)} cáº£nh bÃ¡o báº¥t thÆ°á»ng gáº§n nháº¥t trong pháº¡m vi truy váº¥n."
+        return f"Có {len(rows)} cảnh báo bất thường gần nhất trong phạm vi truy vấn."
     if intent == "SENTIMENT_QUERY":
         parts = [f"{row.get('label', 'UNKNOWN')}: {row.get('count', 0)}" for row in rows[:3]]
-        return "PhÃ¢n bá»• cáº£m xÃºc hiá»‡n táº¡i: " + ", ".join(parts)
-    return f"TÃ¬m tháº¥y {len(rows)} dÃ²ng dá»¯ liá»‡u."
+        return "Phân bổ cảm xúc hiện tại: " + ", ".join(parts)
+    return f"Tìm thấy {len(rows)} dòng dữ liệu."
 
 
 def answer_from_knowledge_base(question: str) -> tuple[str, str, float, bool]:
@@ -1623,11 +1822,11 @@ def answer_from_knowledge_base(question: str) -> tuple[str, str, float, bool]:
         if item["keyword"] in lowered:
             return item["answer"], "FAQ", 0.91, False
 
-    order_tokens = ["Ä‘áº·t", "order", "mua", "thÃªm vÃ o giá»"]
+    order_tokens = ["đặt", "order", "mua", "thêm vào giỏ"]
     if any(token in lowered for token in order_tokens):
-        return "MÃ¬nh Ä‘Ã£ ghi nháº­n yÃªu cáº§u Ä‘áº·t mÃ³n. NhÃ¢n viÃªn sáº½ xÃ¡c nháº­n láº¡i ngay.", "ORDER", 0.74, False
+        return "Mình đã ghi nhận yêu cầu đặt món. Nhân viên sẽ xác nhận lại ngay.", "ORDER", 0.74, False
 
-    return "MÃ¬nh chÆ°a cháº¯c cÃ¢u tráº£ lá»i. MÃ¬nh sáº½ chuyá»ƒn yÃªu cáº§u nÃ y cho nhÃ¢n viÃªn Ä‘á»ƒ há»— trá»£ ngay.", "ESCALATE", 0.41, True
+    return "Mình chưa chắc câu trả lời. Mình sẽ chuyển yêu cầu này cho nhân viên để hỗ trợ ngay.", "ESCALATE", 0.41, True
 
 
 def load_anomalies_from_db(branch_id: str, severity: str | None) -> list[dict[str, Any]]:
@@ -2502,8 +2701,8 @@ def sentiment_trend(request: Request, branchId: str, days: int = 7) -> dict[str,
     today = datetime.now(timezone.utc).date()
     points = []
     for i in range(max(1, min(days, 30))):
-        d = today - timedelta(days=i)
-        points.append({"date": d.isoformat(), "positive": 0.7 + (i % 3) * 0.03, "neutral": 0.2 - (i % 2) * 0.02, "negative": 0.1 - (i % 2) * 0.01})
+        day = today - timedelta(days=i)
+        points.append({"date": day.isoformat(), "positive": 0.7 + (i % 3) * 0.03, "neutral": 0.2 - (i % 2) * 0.02, "negative": 0.1 - (i % 2) * 0.01})
     log_audit("/api/ai/sentiment/trend", "trend", True, branchId)
     track_response_source("/api/ai/sentiment/trend", "fallback")
     return {"branchId": branchId, "points": list(reversed(points)), "source": "fallback"}
@@ -2629,7 +2828,7 @@ def ai_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
             params = [payload.branchId] if payload.branchId and "%s" in generated_sql else []
             sql_result = execute_sql(generated_sql, params)
             if sql_result:
-                answer = f"MÃ¬nh Ä‘Ã£ láº¥y dá»¯ liá»‡u sÆ¡ bá»™ ({len(sql_result)} dÃ²ng) vÃ  Ä‘Ã£ chuyá»ƒn nhÃ¢n viÃªn xá»­ lÃ½ chi tiáº¿t."
+                answer = f"Mình đã lấy dữ liệu sơ bộ ({len(sql_result)} dòng) và đã chuyển nhân viên xử lý chi tiết."
                 confidence = 0.58
                 escalated = True
         except Exception as error:  # pylint: disable=broad-except
@@ -2668,7 +2867,7 @@ def ai_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
         "reply": answer,
         "sqlResult": sql_result,
         "isSuccessful": success,
-        "suggestions": ["Doanh thu hÃ´m nay?", "MÃ³n bÃ¡n cháº¡y nháº¥t?", "Khuyáº¿n mÃ£i Ä‘ang cháº¡y?"],
+        "suggestions": ["Doanh thu hôm nay?", "Món bán chạy nhất?", "Khuyến mãi đang chạy?"],
     }
 
 
@@ -2686,7 +2885,7 @@ def ai_chat_history(request: Request, branchId: str | None = None, limit: int = 
 @metric_guard("chat_suggestions")
 def ai_chat_suggestions(request: Request) -> dict[str, Any]:
     authorize_request(request, None, {"ADMIN", "MANAGER"})
-    return {"items": ["Doanh thu hÃ´m nay so vá»›i hÃ´m qua?", "MÃ³n bÃ¡n cháº¡y nháº¥t tuáº§n nÃ y?", "CÃ³ cáº£nh bÃ¡o báº¥t thÆ°á»ng nÃ o Ä‘ang má»Ÿ?", "Tá»“n kho nguyÃªn liá»‡u nÃ o sáº¯p háº¿t?"]}
+    return {"items": ["Doanh thu hôm nay so với hôm qua?", "Món bán chạy nhất tuần này?", "Có cảnh báo bất thường nào đang mở?", "Tồn kho nguyên liệu nào sắp hết?"]}
 
 
 GEMINI_SQL_SCHEMA_CONTEXT = (
@@ -2752,6 +2951,24 @@ def generate_sql_with_gemini(question, branch_id):
     return sql_out
 
 
+GEMINI_SQL_ALLOWED_TABLES = {
+    "daily_revenue",
+    "item_sales",
+    "daily_stats",
+    "sales_forecast",
+    "anomaly_alert",
+    "sentiment_analysis",
+}
+# System catalogs, file/network/large-object functions and settings must never be reachable from
+# LLM-written SQL (the report database connection is privileged).
+GEMINI_SQL_BLOCKED_PATTERN = re.compile(
+    r"\bpg_|information_schema|\bdblink|\blo_|\bcopy\b|\binto\b|set_config|current_setting"
+    r"|\bcurrent_user\b|\bsession_user\b|\bversion\s*\(|/\*|\\",
+    re.IGNORECASE,
+)
+GEMINI_SQL_TABLE_REF_PATTERN = re.compile(r'\b(?:from|join)\s+("?[A-Za-z_][\w.]*"?)', re.IGNORECASE)
+
+
 def validate_generated_sql(sql):
     if not sql:
         return None
@@ -2761,6 +2978,11 @@ def validate_generated_sql(sql):
         return None
     forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "GRANT", "REVOKE", "--", ";"]
     if any(word in upper for word in forbidden):
+        return None
+    if GEMINI_SQL_BLOCKED_PATTERN.search(normalized):
+        return None
+    tables = [ref.strip('"').split(".")[-1].lower() for ref in GEMINI_SQL_TABLE_REF_PATTERN.findall(normalized)]
+    if not tables or any(table not in GEMINI_SQL_ALLOWED_TABLES for table in tables):
         return None
     if "LIMIT" not in upper:
         normalized = normalized + " LIMIT 50"
@@ -2810,13 +3032,13 @@ def summarize_with_gemini(question, rows):
 
 def is_generic_fallback_question(question):
     q = question.lower()
-    if "doanh thu" in q and ("hÃ´m nay" in q or "hom nay" in q):
+    if "doanh thu" in q and ("hôm nay" in q or "hom nay" in q):
         return False
-    if "mÃ³n" in q and ("bÃ¡n cháº¡y" in q or "ban chay" in q):
+    if "món" in q and ("bán chạy" in q or "ban chay" in q):
         return False
-    if "báº¥t thÆ°á»ng" in q or "cáº£nh bÃ¡o" in q or "canh bao" in q:
+    if "bất thường" in q or "cảnh báo" in q or "canh bao" in q:
         return False
-    if "cáº£m xÃºc" in q or "cam xuc" in q or "sentiment" in q:
+    if "cảm xúc" in q or "cam xuc" in q or "sentiment" in q:
         return False
     return True
 
@@ -2831,17 +3053,19 @@ def report_chat(payload: ReportChatPayload, request: Request) -> dict[str, Any]:
     sanitized_question = redact_pii_text(question)
 
     branch_id = normalize_branch_id(payload.branchId) if payload.branchId is not None else None
-    role = str(payload.role or "MANAGER").upper()
     actor = authorize_request(request, branch_id, {"ADMIN", "MANAGER"})
-    if actor["role"] == "ADMIN":
-        role = "ADMIN"
-    elif actor["role"] == "MANAGER":
-        role = "MANAGER"
+    # The role comes only from the gateway-verified actor, never from the request body
+    # (payload.role used to be able to claim ADMIN and unlock the LLM SQL path).
+    role = "ADMIN" if actor["role"] == "ADMIN" else "MANAGER"
+    if role != "ADMIN":
+        branch_id = actor["branchId"] or branch_id
     intent = infer_report_intent(sanitized_question)
     sql = map_question_to_sql(sanitized_question, branch_id)
     sql_source = "rule"
 
-    if is_generic_fallback_question(sanitized_question) and AI_SENTIMENT_GEMINI_API_KEY:
+    # LLM-written SQL can neither be branch-scoped (daily_revenue/item_sales/daily_stats have no
+    # branchId) nor fully trusted, so only ADMIN gets it; everyone else uses the branch-scoped rules.
+    if is_generic_fallback_question(sanitized_question) and AI_SENTIMENT_GEMINI_API_KEY and role == "ADMIN":
         try:
             gemini_sql_raw = generate_sql_with_gemini(sanitized_question, branch_id)
             gemini_sql = validate_generated_sql(gemini_sql_raw)
@@ -2859,7 +3083,7 @@ def report_chat(payload: ReportChatPayload, request: Request) -> dict[str, Any]:
             params = []
         else:
             params = [branch_id] if branch_id and "%s" in sql else []
-        rows = execute_sql(sql, params)
+        rows = execute_untrusted_report_sql(sql) if sql_source == "gemini" else execute_sql(sql, params)
         if sql_source == "gemini":
             answer = summarize_with_gemini(sanitized_question, rows) or summarize_sql_result(intent, rows)
         else:

@@ -8,7 +8,6 @@ export class ProxyGuard implements CanActivate {
     context: ExecutionContext,
   ): boolean | Promise<boolean> | Observable<boolean> {
     const request = context.switchToHttp().getRequest();
-    const path = request.route.path;
     const user = request.user;
 
     const route = SERVICE_ROUTES.find(r => request.url.startsWith(r.path));

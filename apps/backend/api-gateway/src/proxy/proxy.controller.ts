@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { SERVICE_ROUTES } from './interfaces/service-route.interface';
 import { Request, Response } from 'express';
 import { createProxyMiddleware, RequestHandler } from 'http-proxy-middleware';
+import { LoginRateLimiter } from './login-rate-limiter';
 
 type StaffRole = 'ADMIN' | 'MANAGER' | 'WAITER' | 'BARISTA' | 'STAFF' | 'CUSTOMER';
 
@@ -15,6 +16,7 @@ export class ProxyController {
   private readonly staffRoles = new Set<StaffRole>(['ADMIN', 'MANAGER', 'WAITER', 'BARISTA', 'STAFF', 'CUSTOMER']);
   private readonly activeStaffRoles = new Set<StaffRole>(['ADMIN', 'MANAGER', 'WAITER', 'BARISTA', 'STAFF']);
   private readonly jwtSecretKey: Buffer;
+  private readonly loginLimiter = new LoginRateLimiter();
 
   constructor(
     private readonly configService: ConfigService,
@@ -28,7 +30,7 @@ export class ProxyController {
       pathRewrite: (path) => (path.startsWith('/api/v1/') ? path : path.replace(/^\/api/, '/api/v1')),
     });
 
-    // Táº¡o proxy middleware cho má»—i service route
+    // Tạo proxy middleware cho mỗi service route
     for (const route of SERVICE_ROUTES) {
       const target = this.resolveRouteTarget(route.path);
       const pathRewrite =
@@ -49,8 +51,26 @@ export class ProxyController {
         timeout: route.path === '/api/ai' ? 45000 : undefined,
         // Keep /api/v1/payments for normal payment APIs, but bridge webhook to compat endpoint.
         pathRewrite,
+        // Login requests have their body read by the gateway (for rate limiting): re-send it upstream.
+        onProxyReq: (proxyReq, req: any) => {
+          const raw: Buffer | undefined = req.__bufferedBody;
+          if (raw) {
+            proxyReq.setHeader('Content-Length', raw.length);
+            proxyReq.write(raw);
+          }
+        },
+        onProxyRes: (proxyRes, req: any) => {
+          const attempt = req.__loginAttempt as { ip: string; account: string } | undefined;
+          if (!attempt) return;
+          const status = Number(proxyRes.statusCode || 0);
+          if (status === 401 || status === 403) {
+            this.loginLimiter.recordFailure(attempt.ip, attempt.account);
+          } else if (status >= 200 && status < 300) {
+            this.loginLimiter.recordSuccess(attempt.ip, attempt.account);
+          }
+        },
         onError: (err, req, res: any) => {
-          this.logger.error(`Proxy error â†’ ${target}: ${err.message}`);
+          this.logger.error(`Proxy error → ${target}: ${err.message}`);
           if (!res.headersSent) {
             res.status(502).json({ message: 'Service unavailable' });
           }
@@ -71,6 +91,7 @@ export class ProxyController {
 
   @All('api/*path')
   async handleProxy(@Req() req: Request, @Res() res: Response) {
+    this.stripClientActorHeaders(req);
     this.attachBearerFromQueryForRealtime(req);
     await this.enforceActiveStaffAccount(req);
     const isBranchOrdersPath = /^\/api\/branches\/[^/]+\/orders(\/|$)/.test(req.path);
@@ -97,8 +118,12 @@ export class ProxyController {
     if (!route) {
       return res.status(404).json({ message: 'Route not found' });
     }
+    if (await this.isLoginRateLimited(req, res)) {
+      return;
+    }
     this.authorizeRequest(req);
     this.attachActorContextHeaders(req);
+    await this.enforceTableBranchScope(req);
     await this.validateQrOrderMenuRequest(req);
 
     const proxy = inventoryCompatPath ? this.inventoryCompatProxy : this.proxies.get(route.path);
@@ -114,6 +139,45 @@ export class ProxyController {
         }
       }
     });
+  }
+
+  /**
+   * Non-admin staff may only modify tables of their own branch. table-service itself does not
+   * check branch ownership, so PATCH/DELETE on /api/tables/:id are scoped here.
+   */
+  private async enforceTableBranchScope(req: Request) {
+    const method = req.method.toUpperCase();
+    if (method !== 'PATCH' && method !== 'DELETE') return;
+    const match = /^\/api\/tables\/([^/]+)(?:\/|$)/.exec(req.path);
+    if (!match) return;
+
+    const payload = this.parseTokenPayload(req);
+    const roles = this.extractRolesFromPayload(payload);
+    if (roles.includes('ADMIN')) return;
+
+    const actorBranchId = String(payload?.branchId || '').trim();
+    if (!actorBranchId) {
+      throw new ForbiddenException('MISSING_BRANCH_SCOPE');
+    }
+
+    const tableServiceUrl = this.configService.get<string>('TABLE_SERVICE_URL') || 'http://table-service:3003';
+    let response: globalThis.Response;
+    try {
+      response = await fetch(`${tableServiceUrl}/api/tables/${encodeURIComponent(match[1])}`);
+    } catch {
+      throw new ForbiddenException('Khong the ket noi table-service de xac thuc chi nhanh cua ban');
+    }
+    if (response.status === 404) {
+      return; // let table-service answer 404 itself
+    }
+    if (!response.ok) {
+      throw new ForbiddenException('Khong the xac thuc chi nhanh cua ban');
+    }
+    const table = (await response.json().catch(() => null)) as { branchId?: string | null } | null;
+    const tableBranchId = String(table?.branchId || '').trim();
+    if (tableBranchId && tableBranchId !== actorBranchId) {
+      throw new ForbiddenException('FORBIDDEN_BRANCH_SCOPE');
+    }
   }
 
   private async enforceActiveStaffAccount(req: Request) {
@@ -255,6 +319,11 @@ export class ProxyController {
       this.requireRoles(req, ['ADMIN', 'MANAGER', 'WAITER', 'STAFF']);
       return;
     }
+    // Any staff can read a single branch's info (user-service limits non-admins to their own branch)
+    if (method === 'GET' && /^\/api\/branches\/[^/]+$/.test(path)) {
+      this.requireRoles(req, ['ADMIN', 'MANAGER', 'WAITER', 'BARISTA', 'STAFF']);
+      return;
+    }
     if (method === 'GET' && path.startsWith('/api/branches')) {
       this.requireRoles(req, ['ADMIN', 'MANAGER'])
       return
@@ -333,6 +402,12 @@ export class ProxyController {
         this.requireRoles(req, ['ADMIN', 'MANAGER', 'WAITER', 'BARISTA', 'STAFF']);
         return;
       }
+    }
+
+    // Branch menu writes (activate / reprice / remove an item for a branch): manager/admin only
+    if (method !== 'GET' && /^\/api\/orders\/branches\/[^/]+\/menu\/items(\/|$)/.test(path)) {
+      this.requireRoles(req, ['ADMIN', 'MANAGER']);
+      return;
     }
 
     // Menu management (manager/admin)
@@ -510,6 +585,92 @@ export class ProxyController {
       });
     } catch (error) {
       throw new UnauthorizedException('Invalid token');
+    }
+  }
+
+  private static readonly LOGIN_ATTEMPT_PATHS = new Set([
+    '/api/auth/login',
+    '/api/users/login',
+    '/api/users/customer/login-email',
+    '/api/users/customer/login-otp',
+    '/api/auth/otp/verify',
+    '/api/auth/forgot-password',
+    '/api/auth/reset-password',
+  ]);
+
+  /**
+   * Brute-force protection for credential endpoints: answers 429 once an IP (or IP + account)
+   * has too many recent failures. Failures/successes are recorded from the upstream response
+   * in onProxyRes. Returns true when the request was rejected here.
+   */
+  private async isLoginRateLimited(req: Request, res: Response): Promise<boolean> {
+    if (req.method.toUpperCase() !== 'POST' || !ProxyController.LOGIN_ATTEMPT_PATHS.has(req.path)) {
+      return false;
+    }
+
+    const raw = await this.readRequestBody(req, 64 * 1024);
+    (req as any).__bufferedBody = raw;
+    let body: Record<string, any> = {};
+    try {
+      body = raw.length ? JSON.parse(raw.toString('utf8')) : {};
+    } catch {
+      body = {};
+    }
+    const account = String(body.email || body.phone || body.username || body.identifier || '')
+      .trim()
+      .toLowerCase();
+    const ip = this.resolveClientIp(req);
+
+    const decision = this.loginLimiter.check(ip, account);
+    if (decision.blocked) {
+      res.setHeader('Retry-After', String(decision.retryAfterSeconds));
+      res.status(429).json({
+        statusCode: 429,
+        message: `Ban da nhap sai qua nhieu lan. Vui long thu lai sau ${Math.ceil(decision.retryAfterSeconds / 60)} phut.`,
+      });
+      return true;
+    }
+    (req as any).__loginAttempt = { ip, account };
+    return false;
+  }
+
+  /** Real client IP: Cloudflare Tunnel sets cf-connecting-ip; otherwise the first X-Forwarded-For hop. */
+  private resolveClientIp(req: Request) {
+    const cf = String(req.headers['cf-connecting-ip'] || '').trim();
+    if (cf) return cf;
+    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    return forwarded || String(req.ip || req.socket?.remoteAddress || 'unknown');
+  }
+
+  private readRequestBody(req: Request, maxBytes: number): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      req.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > maxBytes) {
+          reject(new BadRequestException('Request body too large'));
+          req.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on('end', () => resolve(Buffer.concat(chunks)));
+      req.on('error', reject);
+    });
+  }
+
+  /**
+   * Downstream services trust x-actor-* (and their legacy aliases) as the caller identity.
+   * Only the gateway may set them, from a verified token in attachActorContextHeaders,
+   * so any value supplied by the client is dropped before routing/authorization.
+   */
+  private stripClientActorHeaders(req: Request) {
+    for (const key of Object.keys(req.headers)) {
+      const lower = key.toLowerCase();
+      if (lower.startsWith('x-actor-') || lower === 'x-user-role' || lower === 'x-user-id' || lower === 'x-branch-id') {
+        delete req.headers[key];
+      }
     }
   }
 

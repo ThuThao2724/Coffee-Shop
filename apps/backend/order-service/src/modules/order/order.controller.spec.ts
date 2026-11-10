@@ -74,6 +74,14 @@ describe('OrderController', () => {
     expect(orderService.removeBranchMenuItem).toHaveBeenCalledWith('b1', 'm1', { role: 'MANAGER', branchId: 'b1' });
   });
 
+  it('rejects branch menu writes without a manager/admin role', () => {
+    for (const role of [undefined, '', 'WAITER', 'CUSTOMER']) {
+      expect(() => controller.activateBranchMenuItem('b1', 'm1', {} as any, role as any, 'b1')).toThrow('FORBIDDEN_ROLE');
+      expect(() => controller.updateBranchMenuItem('b1', 'm1', {} as any, role as any, 'b1')).toThrow('FORBIDDEN_ROLE');
+      expect(() => controller.removeBranchMenuItem('b1', 'm1', role as any, 'b1')).toThrow('FORBIDDEN_ROLE');
+    }
+  });
+
   it('forwards category management requests', () => {
     const createDto = { name: 'Coffee' };
     const updateDto = { name: 'Tea' };

@@ -14,6 +14,14 @@ concurrency:
 permissions:
   contents: read
 
+# docker-compose.yml requires these (no public "dev-..." defaults any more), but CI has no .env.
+# CI-only placeholders so `docker compose config` / `up` work here; never used outside CI.
+env:
+  JWT_SECRET: ci-only-jwt-secret-not-for-production-0123456789abcdef
+  INTERNAL_SERVICE_TOKEN: ci-only-internal-token-not-for-production
+  # `prisma validate` (Migration Checks) needs the variable to exist; nothing connects to it.
+  DATABASE_URL: postgresql://ci:ci@localhost:5432/ci?schema=public
+
 jobs:
   node-build-and-test:
     name: Node Build/Test (${{ matrix.service }})
@@ -161,7 +169,7 @@ jobs:
         run: docker build -t coffee-ai-service:ci ./apps/backend/ai-service
 
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.24.0
         with:
           image-ref: coffee-ai-service:ci
           format: table
@@ -183,7 +191,7 @@ jobs:
         run: docker compose -f logging/elk-stack.yml config -q
 
       - name: Validate Prometheus config
-        run: docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro" prom/prometheus:v2.53.0 check config /etc/prometheus/prometheus.yml
+        run: docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro" -v "$PWD/monitoring/alerts:/etc/prometheus/alerts:ro" prom/prometheus:v2.53.0 check config /etc/prometheus/prometheus.yml
 
   e2e-ai-contract:
     name: E2E AI Contract (develop)

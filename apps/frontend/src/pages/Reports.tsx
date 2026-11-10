@@ -1,4 +1,5 @@
 import ForecastDayDetail from '../components/ForecastDayDetail'
+import IngredientForecast from '../components/IngredientForecast'
 import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import {
@@ -804,7 +805,10 @@ export default function Reports() {
               </div>
             </div>
             {revenueForecastChartData.length > 0 && (
+              <>
               <ForecastDayDetail data={revenueForecastChartData} branchId={effectiveAiBranchId} />
+              <IngredientForecast branchId={effectiveAiBranchId} />
+            </>
             )}
             {aiInsight.anomalies.filter((item) => !item.isResolved).length > 0 && (
               <div className="rounded-xl border border-amber-100 bg-amber-50/70 p-3">

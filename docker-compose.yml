@@ -1,6 +1,10 @@
 services:
   # Core infrastructure
   postgres:
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     image: postgres:15-alpine
     expose:
       - "5432"
@@ -23,6 +27,10 @@ services:
     restart: unless-stopped
 
   redis:
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     image: redis:7-alpine
     expose:
       - "6379"
@@ -42,6 +50,10 @@ services:
     restart: unless-stopped
 
   api-gateway:
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     build: ./apps/backend/api-gateway
     expose:
       - "8080"
@@ -50,7 +62,7 @@ services:
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: 8080
-      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
       REDIS_URL: redis://redis:6379
       USER_SERVICE_URL: http://user-service:3000
       TABLE_SERVICE_URL: http://table-service:3003
@@ -92,20 +104,26 @@ services:
     restart: unless-stopped
 
   user-service:
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     build: ./apps/backend/user-service
     expose:
       - "3000"
     environment:
+      # Let the JVM use most of the container memory limit (default would be only 25%).
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=70.0
       SPRING_DATASOURCE_URL: ${USER_DB_URL:-jdbc:postgresql://postgres:5432/userdb}
       SPRING_DATASOURCE_USERNAME: ${USER_DB_USERNAME:-postgres}
       SPRING_DATASOURCE_PASSWORD: ${USER_DB_PASSWORD:-postgres}
-      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
       JWT_EXPIRATION: 86400000
       SERVER_PORT: 3000
       TABLE_SERVICE_URL: http://table-service:3003
       ORDER_SERVICE_URL: http://order-service:3001
       INVENTORY_SERVICE_URL: http://inventory-service:3005
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN must be set in .env}
       SPRING_DATA_REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
@@ -124,10 +142,16 @@ services:
     restart: unless-stopped
 
   table-service:
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     build: ./apps/backend/table-service
     expose:
       - "3003"
     environment:
+      # Let the JVM use most of the container memory limit (default would be only 25%).
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=70.0
       SPRING_DATASOURCE_URL: ${TABLE_DB_URL:-jdbc:postgresql://postgres:5432/tabledb}
       SPRING_DATASOURCE_USERNAME: ${TABLE_DB_USERNAME:-postgres}
       SPRING_DATASOURCE_PASSWORD: ${TABLE_DB_PASSWORD:-postgres}
@@ -136,8 +160,8 @@ services:
       APP_CHAT_SERVICE_URL: http://chat-service:3007/api/chats
       APP_ORDER_SERVICE_URL: http://order-service:3001/api/orders
       SEED_TABLES_ON_STARTUP: ${SEED_TABLES_ON_STARTUP:-false}
-      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN must be set in .env}
     depends_on:
       postgres:
         condition: service_healthy
@@ -154,8 +178,28 @@ services:
     restart: unless-stopped
 
   order-service:
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     build: ./apps/backend/order-service
-    command: sh -c "npx prisma db push --accept-data-loss && npx prisma db seed && node dist/src/main.js"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if ! out=$$(npx prisma migrate deploy 2>&1); then
+          echo "$$out"
+          echo "$$out" | grep -q P3005 || exit 1
+          echo "Database has tables but no migration history (created by db push): baselining 0_init"
+          npx prisma db push --skip-generate
+          npx prisma migrate resolve --applied 0_init
+          npx prisma migrate deploy
+        else
+          echo "$$out"
+        fi
+        npx prisma db seed
+        exec node dist/src/main.js
     expose:
       - "3001"
     environment:
@@ -168,7 +212,7 @@ services:
       USER_SERVICE_URL: http://user-service:3000
       CHAT_SERVICE_URL: http://chat-service:3007/api/chats
       TABLE_SERVICE_URL: http://table-service:3003
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN must be set in .env}
     depends_on:
       postgres:
         condition: service_healthy
@@ -187,8 +231,27 @@ services:
     restart: unless-stopped
 
   chat-service:
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     build: ./apps/backend/chat-service
-    command: sh -c "npx prisma db push --accept-data-loss && node dist/main"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if ! out=$$(npx prisma migrate deploy 2>&1); then
+          echo "$$out"
+          echo "$$out" | grep -q P3005 || exit 1
+          echo "Database has tables but no migration history (created by db push): baselining 0_init"
+          npx prisma db push --skip-generate
+          npx prisma migrate resolve --applied 0_init
+          npx prisma migrate deploy
+        else
+          echo "$$out"
+        fi
+        exec node dist/main
     expose:
       - "3007"
     ports:
@@ -197,7 +260,7 @@ services:
       NODE_ENV: ${CHAT_NODE_ENV:-production}
       PORT: 3007
       DATABASE_URL: ${CHAT_DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/chatdb?schema=public}
-      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
       REDIS_URL: redis://redis:6379
       SOCKET_IO_REDIS_ADAPTER: ${SOCKET_IO_REDIS_ADAPTER:-true}
       KAFKA_REQUIRED: ${CHAT_KAFKA_REQUIRED:-false}
@@ -218,8 +281,28 @@ services:
     restart: unless-stopped
 
   inventory-service:
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     build: ./apps/backend/inventory-service
-    command: sh -c "npx prisma db push --accept-data-loss && npx prisma db seed && node dist/src/main.js"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if ! out=$$(npx prisma migrate deploy 2>&1); then
+          echo "$$out"
+          echo "$$out" | grep -q P3005 || exit 1
+          echo "Database has tables but no migration history (created by db push): baselining 0_init"
+          npx prisma db push --skip-generate
+          npx prisma migrate resolve --applied 0_init
+          npx prisma migrate deploy
+        else
+          echo "$$out"
+        fi
+        npx prisma db seed
+        exec node dist/src/main.js
     expose:
       - "3005"
     environment:
@@ -229,8 +312,8 @@ services:
       KAFKA_REQUIRED: ${INVENTORY_KAFKA_REQUIRED:-false}
       KAFKA_BROKERS: ${KAFKA_BROKERS:-}
       CHAT_SERVICE_URL: http://chat-service:3007/api/chats
-      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN must be set in .env}
       LOW_STOCK_ALERT_EMAILS: ${LOW_STOCK_ALERT_EMAILS:-manager@coffeeshop.com}
       SMTP_HOST: ${SMTP_HOST:-smtp.your-provider.com}
       SMTP_PORT: ${SMTP_PORT:-587}
@@ -251,8 +334,27 @@ services:
     restart: unless-stopped
 
   payment-service:
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     build: ./apps/backend/payment-service
-    command: sh -c "npx prisma db push && node dist/src/main.js"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if ! out=$$(npx prisma migrate deploy 2>&1); then
+          echo "$$out"
+          echo "$$out" | grep -q P3005 || exit 1
+          echo "Database has tables but no migration history (created by db push): baselining 0_init"
+          npx prisma db push --skip-generate
+          npx prisma migrate resolve --applied 0_init
+          npx prisma migrate deploy
+        else
+          echo "$$out"
+        fi
+        exec node dist/src/main.js
     expose:
       - "3004"
     environment:
@@ -261,8 +363,8 @@ services:
       DATABASE_URL: ${PAYMENT_DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/paymentdb?schema=public}
       KAFKA_REQUIRED: ${PAYMENT_KAFKA_REQUIRED:-false}
       KAFKA_BROKERS: ${KAFKA_BROKERS:-}
-      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN must be set in .env}
       CHAT_SERVICE_URL: http://chat-service:3007/api/chats
       ORDER_SERVICE_URL: http://order-service:3001
       APP_BASE_URL: ${APP_BASE_URL:-https://coffee.example.com}
@@ -309,8 +411,27 @@ services:
     restart: unless-stopped
 
   report-service:
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     build: ./apps/backend/report-service
-    command: sh -c "npx prisma db push && node dist/src/main.js"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if ! out=$$(npx prisma migrate deploy 2>&1); then
+          echo "$$out"
+          echo "$$out" | grep -q P3005 || exit 1
+          echo "Database has tables but no migration history (created by db push): baselining 0_init"
+          npx prisma db push --skip-generate
+          npx prisma migrate resolve --applied 0_init
+          npx prisma migrate deploy
+        else
+          echo "$$out"
+        fi
+        exec node dist/src/main.js
     expose:
       - "3006"
     environment:
@@ -323,7 +444,7 @@ services:
       USER_DATABASE_URL: ${REPORT_USER_DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/userdb?schema=public}
       KAFKA_REQUIRED: ${REPORT_KAFKA_REQUIRED:-false}
       KAFKA_BROKERS: ${KAFKA_BROKERS:-}
-      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
     depends_on:
       postgres:
         condition: service_healthy
@@ -346,9 +467,12 @@ services:
     restart: unless-stopped
 
   frontend:
+    deploy:
+      resources:
+        limits:
+          memory: 128m
     build: ./apps/frontend
     ports:
-      - "${DOCKER_BIND_IP:-127.0.0.1}:${FRONTEND_HTTP_PORT:-80}:80"
       - "${DOCKER_BIND_IP:-127.0.0.1}:${FRONTEND_MENU_HOST_PORT:-8088}:80"
     depends_on:
       api-gateway:
@@ -366,6 +490,10 @@ services:
     restart: unless-stopped
 
   ai-service:
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     build: ./apps/backend/ai-service
     expose:
       - "3010"
@@ -378,6 +506,9 @@ services:
       AI_LLM_API_KEY: ${AI_LLM_API_KEY:-}
       AI_CHATBOT_SQL_TIMEOUT_MS: ${AI_CHATBOT_SQL_TIMEOUT_MS:-2000}
       AI_CHATBOT_MAX_ROWS: ${AI_CHATBOT_MAX_ROWS:-200}
+      # Require a gateway-verified actor role on protected AI endpoints (no anonymous "LEGACY" access).
+      AI_ENFORCE_RBAC: ${AI_ENFORCE_RBAC:-true}
+      AI_ALLOW_LEGACY_NO_AUTH: ${AI_ALLOW_LEGACY_NO_AUTH:-false}
       AI_ROLLOUT_PERCENT: ${AI_ROLLOUT_PERCENT:-10}
       AI_ACTIVE_MODEL_VERSION: ${AI_ACTIVE_MODEL_VERSION:-baseline_v1}
       AI_STAGING_MODEL_VERSION: ${AI_STAGING_MODEL_VERSION:-baseline_v2_candidate}
@@ -395,6 +526,10 @@ services:
     restart: unless-stopped
 
   db-backup:
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     image: postgres:15-alpine
     depends_on:
       postgres:
@@ -408,8 +543,18 @@ services:
       mkdir -p /backups &&
       while true; do
         ts=$$(date +%Y%m%d-%H%M%S);
-        PGPASSWORD=$$POSTGRES_PASSWORD pg_dumpall -h postgres -U postgres > /backups/backup-$$ts.sql &&
-        find /backups -type f -name 'backup-*.sql' -mtime +$$BACKUP_RETENTION_DAYS -delete;
+        until pg_isready -h postgres -U postgres >/dev/null 2>&1; do echo waiting for postgres; sleep 5; done;
+        if PGPASSWORD=$$POSTGRES_PASSWORD pg_dumpall -h postgres -U postgres > /backups/tmp-$$ts.sql && [ -s /backups/tmp-$$ts.sql ]; then
+          mv /backups/tmp-$$ts.sql /backups/backup-$$ts.sql;
+          echo backup ok $$ts;
+          find /backups -type f -name 'backup-*.sql' -size 0 -delete;
+          find /backups -type f -name 'backup-*.sql' -mtime +$$BACKUP_RETENTION_DAYS -delete;
+        else
+          echo backup FAILED $$ts;
+          rm -f /backups/tmp-$$ts.sql;
+          sleep 60;
+          continue;
+        fi;
         sleep $$BACKUP_INTERVAL_SECONDS;
       done"
     volumes:

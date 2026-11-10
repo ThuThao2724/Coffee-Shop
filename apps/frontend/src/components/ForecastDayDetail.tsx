@@ -136,11 +136,10 @@ export default function ForecastDayDetail({ data, branchId }: { data: ForecastPo
           evening: p.forecast * shares.evening,
         };
       }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [data, profile],
   );
 
-  const dayStats = useMemo(() => (day ? statsFor(day.date) : null), [day, profile]); // eslint-disable-line react-hooks/exhaustive-deps
+  const dayStats = useMemo(() => (day ? statsFor(day.date) : null), [day, profile]);
 
   const rows = useMemo(() => {
     if (!day) return [];
@@ -158,7 +157,6 @@ export default function ForecastDayDetail({ data, branchId }: { data: ForecastPo
         winPct: win && sessionRev ? (win.rev / sessionRev) * 100 : 0,
       };
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [day, dayStats]);
 
   if (!day) return null;

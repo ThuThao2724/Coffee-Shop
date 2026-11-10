@@ -1,4 +1,4 @@
-import { Global, DynamicModule, Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { CustomLogger } from './logger.service';
 
 @Global()
