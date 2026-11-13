@@ -1,7 +1,7 @@
 plugins {
     id 'java'
-    id 'org.springframework.boot' version '3.2.5'
-    id 'io.spring.dependency-management' version '1.1.4'
+    id 'org.springframework.boot' version '3.5.16'
+    id 'io.spring.dependency-management' version '1.1.7'
     id 'checkstyle'
     id 'jacoco'
 }
@@ -16,6 +16,12 @@ java {
 repositories {
     mavenCentral()
 }
+
+// Security patches newer than what Spring Boot 3.5.16 manages (Trivy HIGH/CRITICAL).
+// Drop each line once the Spring Boot version in use already ships that version or newer.
+ext['tomcat.version'] = '10.1.61'
+ext['jackson-bom.version'] = '2.21.8'
+ext['postgresql.version'] = '42.7.12'
 
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'

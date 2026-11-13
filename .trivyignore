@@ -1,0 +1,9 @@
+# Findings accepted after review. Each entry needs a reason and an expiry date, after which Trivy
+# reports it again and the decision has to be made again.
+
+# spring-webmvc 6.2.19 (table-service, user-service): the only public fix is Spring Framework 7.0.9,
+# which means moving to Spring Boot 4. Neither service is affected:
+# - XsltView RCE/SSRF: no XsltView anywhere in the code.
+CVE-2026-47884 exp:2027-03-01
+# - SSE stream corruption with view fragments: HrRealtimeHub sends JSON data events, never view fragments.
+CVE-2026-47890 exp:2027-03-01

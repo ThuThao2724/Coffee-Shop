@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim AS builder
+FROM node:22-bookworm-slim AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package*.json ./
@@ -7,9 +7,16 @@ COPY prisma ./prisma/
 RUN npx prisma generate
 COPY . .
 RUN npm run build
+# Ship only runtime packages: jest, the Nest CLI and other dev tools carry vulnerable glob/minimatch/tmp.
+RUN npm prune --omit=dev
 
-FROM node:20-bookworm-slim AS runner
-RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+# Node 22 LTS: Node 20 reached end of life in April 2026 and its images no longer get OS patches.
+FROM node:22-bookworm-slim AS runner
+# Apply Debian security updates published after the base image was built.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+# The npm bundled with the base image ships vulnerable copies of tar/glob/brace-expansion;
+# npm is still needed at start-up for `npx prisma migrate deploy`.
+RUN npm install -g npm@11.21.2 && npm cache clean --force
 WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist

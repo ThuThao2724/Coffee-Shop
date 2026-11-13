@@ -1,4 +1,4 @@
-FROM node:20.19-bullseye-slim AS builder
+FROM node:22-bookworm-slim AS builder
 
 WORKDIR /app
 COPY package*.json ./
@@ -15,6 +15,9 @@ RUN npm run build -- --mode production
 # Runs as the unprivileged `nginx` user (uid 101), so it listens on 8080 instead of 80 and keeps its
 # pid/temp files under /tmp. Files below stay root-owned and read-only for that user.
 FROM nginxinc/nginx-unprivileged:1.31-alpine
+# Apply Alpine security updates published after the base image was built.
+USER root
+RUN apk upgrade --no-cache
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 USER 101
