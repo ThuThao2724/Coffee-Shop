@@ -1,4 +1,4 @@
-FROM node:20-alpine as builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 COPY package*.json ./
@@ -11,7 +11,11 @@ RUN npm config set fetch-retries 5 \
 COPY . .
 RUN npm run build
 
-FROM node:20-alpine
+# Node 22 LTS: Node 20 reached end of life in April 2026 and its images no longer get OS patches.
+FROM node:22-alpine
+# Apply Alpine security updates published after the base image was built, and replace the bundled
+# npm (vulnerable copies of tar/glob/brace-expansion).
+RUN apk upgrade --no-cache && npm install -g npm@11.21.2 && npm cache clean --force
 WORKDIR /app
 COPY package*.json ./
 RUN npm config set fetch-retries 5 \

@@ -44,7 +44,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: "20.19"
+          node-version: "22"
           cache: npm
           cache-dependency-path: ${{ matrix.service }}/package-lock.json
 
@@ -149,7 +149,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: "20.19"
+          node-version: "22"
 
       - name: Validate Prisma schemas
         run: |
@@ -158,22 +158,42 @@ jobs:
           cd ../payment-service && npm ci && npx prisma validate
           cd ../report-service && npm ci && npx prisma validate
 
-  image-scan-ai:
-    name: Image Scan (ai-service)
+  # Scans every image the stack ships (OS packages, the bundled npm, Java/Python/Node libraries).
+  # Fails on CRITICAL/HIGH findings that already have a fix: rebuilding or bumping clears them.
+  image-scan:
+    name: Image Scan (${{ matrix.service }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - ai-service
+          - api-gateway
+          - chat-service
+          - inventory-service
+          - order-service
+          - payment-service
+          - report-service
+          - table-service
+          - user-service
+          - frontend
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Build ai-service image
-        run: docker build -t coffee-ai-service:ci ./apps/backend/ai-service
+      - name: Build ${{ matrix.service }} image
+        run: |
+          if [ "${{ matrix.service }}" = "frontend" ]; then dir=apps/frontend; else dir=apps/backend/${{ matrix.service }}; fi
+          docker build --pull -t "coffee-${{ matrix.service }}:ci" "$dir"
 
       - name: Trivy scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: coffee-ai-service:ci
+          image-ref: coffee-${{ matrix.service }}:ci
+          scanners: vuln
           format: table
-          exit-code: 0
+          exit-code: 1
+          ignore-unfixed: true
           severity: "CRITICAL,HIGH"
 
   compose-validate:
@@ -200,7 +220,7 @@ jobs:
       - java-build-and-test
       - python-ai-check
       - migration-checks
-      - image-scan-ai
+      - image-scan
       - compose-validate
     if: github.ref == 'refs/heads/develop' || github.base_ref == 'develop'
     steps:
@@ -210,7 +230,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: "20.19"
+          node-version: "22"
 
       - name: Start stack for E2E
         run: docker compose up -d --build
@@ -252,7 +272,7 @@ jobs:
       - java-build-and-test
       - python-ai-check
       - migration-checks
-      - image-scan-ai
+      - image-scan
       - compose-validate
     if: github.ref == 'refs/heads/main'
     steps:
