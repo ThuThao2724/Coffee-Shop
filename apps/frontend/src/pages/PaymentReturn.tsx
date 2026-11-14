@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router'
 import api from '@/utils/api'
 import { useI18n } from '@/utils/i18n'
 

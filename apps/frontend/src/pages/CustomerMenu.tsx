@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router'
 import toast from 'react-hot-toast'
 import api from '@/utils/api'
 import { getSocket, disconnectSocket } from '@/utils/socket'

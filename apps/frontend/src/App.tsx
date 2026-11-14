@@ -1,6 +1,6 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route } from 'react-router'
 import { Suspense, lazy } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation } from 'react-router'
 import DashboardLayout from './components/layout/DashboardLayout'
 import { RoutePageSkeleton } from './components/ui/PageSkeleton'
 import { useI18n } from './utils/i18n'
@@ -55,7 +55,7 @@ function RouteFallback() {
 
 function App() {
   return (
-    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <BrowserRouter>
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="/login" element={<Login />} />
