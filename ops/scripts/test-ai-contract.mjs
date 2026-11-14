@@ -1,7 +1,8 @@
 const baseUrl = process.env.API_BASE_URL || 'http://127.0.0.1:18080/api';
 const managerEmail = process.env.AI_E2E_MANAGER_EMAIL || 'manager.central@coffeeshop.local';
 const managerPassword = process.env.AI_E2E_MANAGER_PASSWORD || 'Manager@123';
-const branchId = process.env.AI_E2E_BRANCH_ID || 'branch-e2e';
+// Defaults to the manager's own branch: a MANAGER is (correctly) refused any other branch scope.
+let branchId = process.env.AI_E2E_BRANCH_ID || '';
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -35,6 +36,8 @@ async function login() {
   });
   const token = payload?.accessToken || payload?.token;
   assert(typeof token === 'string' && token.length > 20, 'Missing access token from login');
+  if (!branchId) branchId = payload?.user?.branchId || '';
+  assert(branchId, 'No branchId: set AI_E2E_BRANCH_ID or log in as a manager assigned to a branch');
   return token;
 }
 

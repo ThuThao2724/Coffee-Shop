@@ -1,3 +1,7 @@
 # Prisma checksums migration files byte-for-byte: keep them LF on every OS.
 **/prisma/migrations/**/*.sql text eol=lf
 **/prisma/migrations/*.toml text eol=lf
+
+# Shell scripts run inside Linux containers and on the VPS (e.g. init-db.sh as the Postgres
+# init script): a CRLF checkout on Windows breaks them with "/bin/bash^M: bad interpreter".
+*.sh text eol=lf

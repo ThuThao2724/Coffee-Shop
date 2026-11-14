@@ -7,13 +7,22 @@ import com.coffeeshop.userservice.repository.BranchRepository;
 import com.coffeeshop.userservice.repository.UserRepository;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
+/**
+ * Demo/test accounts with passwords published in this repository. Every start resets their
+ * passwords and re-activates them, so this must never run in production: it only runs when
+ * SEED_TEST_ACCOUNTS=true (local development and the CI end-to-end job).
+ */
+@Slf4j
 @Component
 @RequiredArgsConstructor
 @DependsOn("schemaMigrationRunner")
+@ConditionalOnProperty(name = "app.seed.test-accounts", havingValue = "true")
 public class TestAccountSeeder {
 
     private final UserRepository userRepository;
@@ -22,6 +31,8 @@ public class TestAccountSeeder {
 
     @PostConstruct
     public void seed() {
+        log.warn("SEED_TEST_ACCOUNTS=true: resetting demo accounts to their published passwords. "
+                + "Never enable this in production.");
         Branch centralBranch = upsertBranch(
                 "Chi nhanh Trung Tam",
                 "1 Le Loi, Quan 1, TP HCM",
