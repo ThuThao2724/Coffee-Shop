@@ -18,6 +18,7 @@ public interface UserRepository extends JpaRepository<User, String> {
     boolean existsByPersonalQrCode(String personalQrCode);
     boolean existsByEmail(String email);
     boolean existsByPhone(String phone);
+    boolean existsByRole(User.Role role);
     List<User> findByRoleInOrderByCreatedAtDesc(List<User.Role> roles);
     List<User> findByRoleInAndBranchIdOrderByCreatedAtDesc(List<User.Role> roles, String branchId);
     long countByBranchIdAndRoleIn(String branchId, List<User.Role> roles);

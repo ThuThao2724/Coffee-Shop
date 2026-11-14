@@ -213,7 +213,7 @@ jobs:
         run: docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro" -v "$PWD/monitoring/alerts:/etc/prometheus/alerts:ro" prom/prometheus:v2.53.0 check config /etc/prometheus/prometheus.yml
 
   e2e-ai-contract:
-    name: E2E AI Contract (develop)
+    name: E2E AI Contract
     runs-on: ubuntu-24.04
     needs:
       - node-build-and-test
@@ -222,7 +222,7 @@ jobs:
       - migration-checks
       - image-scan
       - compose-validate
-    if: github.ref == 'refs/heads/develop' || github.base_ref == 'develop'
+    # Runs on every PR and on main (the repository has no develop branch, so it never ran before).
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -232,33 +232,31 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Start stack for E2E
-        run: docker compose up -d --build
-
-      - name: Wait for gateway health
+      # Throwaway secrets for this run only. SEED_TEST_ACCOUNTS creates the demo accounts the test
+      # logs in with; it stays off everywhere else.
+      - name: Create CI environment
         run: |
-          for _ in {1..120}; do
-            if curl -fsS http://127.0.0.1:8080/ >/dev/null; then
-              echo "Gateway is healthy"
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "Gateway health check timed out"
-          docker compose ps
-          exit 1
+          {
+            echo "JWT_SECRET=$(openssl rand -hex 32)"
+            echo "INTERNAL_SERVICE_TOKEN=$(openssl rand -hex 24)"
+            echo "SEED_TEST_ACCOUNTS=true"
+          } > .env
+
+      - name: Start stack and wait until every service is healthy
+        run: docker compose up -d --build --wait --wait-timeout 900
 
       - name: Run AI contract E2E via gateway
         env:
           API_BASE_URL: http://127.0.0.1:8080/api
           AI_E2E_MANAGER_EMAIL: manager.central@coffeeshop.local
           AI_E2E_MANAGER_PASSWORD: Manager@123
-          AI_E2E_BRANCH_ID: branch-e2e
         run: node ops/scripts/test-ai-contract.mjs
 
       - name: Dump logs on failure
         if: failure()
-        run: docker compose logs --no-color --tail=200
+        run: |
+          docker compose ps
+          docker compose logs --no-color --tail=200
 
       - name: Stop stack
         if: always()
@@ -274,6 +272,7 @@ jobs:
       - migration-checks
       - image-scan
       - compose-validate
+      - e2e-ai-contract
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Check deploy secrets

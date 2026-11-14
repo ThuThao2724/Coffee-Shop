@@ -89,6 +89,21 @@ if [[ -z "$sepay_key" ]]; then
   echo "WARN  SEPAY_IPN_API_KEY empty: SePay webhooks are not authenticated by API key"
 fi
 
+if [[ "$(get_value SEED_TEST_ACCOUNTS)" == "true" ]]; then
+  echo "FAIL  SEED_TEST_ACCOUNTS=true resets the demo accounts (passwords published in the repo) on every start"; fail=1
+fi
+
+admin_pw="$(get_value BOOTSTRAP_ADMIN_PASSWORD)"
+if [[ -n "$admin_pw" ]]; then
+  if is_known_default "$admin_pw" || { (( ${#admin_pw} >= 8 )) && appears_in_repo "$admin_pw"; }; then
+    echo "FAIL  BOOTSTRAP_ADMIN_PASSWORD is a public/demo value; choose your own"; fail=1
+  elif (( ${#admin_pw} < 12 )); then
+    echo "FAIL  BOOTSTRAP_ADMIN_PASSWORD is too short (${#admin_pw} chars, need >= 12)"; fail=1
+  else
+    echo "OK    BOOTSTRAP_ADMIN_PASSWORD (only used while no ADMIN exists; remove it after the first start)"
+  fi
+fi
+
 if (( fail )); then
   echo "Deploy check FAILED: fix the items above in .env (then re-encrypt .env.enc if you deploy from it)." >&2
   exit 1
