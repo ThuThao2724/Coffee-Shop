@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
+import { buildCorsOriginCheck } from './common/cors-origin';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
@@ -17,17 +18,7 @@ async function bootstrap() {
 
   app.enableCors({
     credentials: true,
-    origin: (origin, callback) => {
-      if (!origin) {
-        callback(null, true);
-        return;
-      }
-      if (!allowedOrigins.length || allowedOrigins.includes(origin)) {
-        callback(null, true);
-        return;
-      }
-      callback(new Error(`CORS blocked for origin: ${origin}`), false);
-    },
+    origin: buildCorsOriginCheck(allowedOrigins),
   });
   app.enableShutdownHooks();
 

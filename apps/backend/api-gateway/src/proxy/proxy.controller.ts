@@ -8,6 +8,19 @@ import { LoginRateLimiter } from './login-rate-limiter';
 
 type StaffRole = 'ADMIN' | 'MANAGER' | 'WAITER' | 'BARISTA' | 'STAFF' | 'CUSTOMER';
 
+/**
+ * The services behind the gateway enable CORS for every origin (`*`). Only the gateway's own CORS
+ * policy (ALLOWED_ORIGINS) may answer the browser, so their CORS headers are dropped; otherwise an
+ * origin the gateway refuses still gets `access-control-allow-origin: *` from upstream.
+ */
+export function stripUpstreamCorsHeaders(headers: Record<string, unknown>) {
+  for (const name of Object.keys(headers)) {
+    if (name.toLowerCase().startsWith('access-control-')) {
+      delete headers[name];
+    }
+  }
+}
+
 @Controller()
 export class ProxyController {
   private logger = new Logger('ProxyController');
@@ -28,6 +41,7 @@ export class ProxyController {
       target: inventoryTarget,
       changeOrigin: true,
       pathRewrite: (path) => (path.startsWith('/api/v1/') ? path : path.replace(/^\/api/, '/api/v1')),
+      onProxyRes: (proxyRes) => stripUpstreamCorsHeaders(proxyRes.headers),
     });
 
     // Tạo proxy middleware cho mỗi service route
@@ -60,6 +74,7 @@ export class ProxyController {
           }
         },
         onProxyRes: (proxyRes, req: any) => {
+          stripUpstreamCorsHeaders(proxyRes.headers);
           const attempt = req.__loginAttempt as { ip: string; account: string } | undefined;
           if (!attempt) return;
           const status = Number(proxyRes.statusCode || 0);
