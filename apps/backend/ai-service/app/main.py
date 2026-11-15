@@ -703,6 +703,12 @@ def ensure_kb_fresh() -> None:
         reload_knowledge_base(source="auto-interval")
 
 
+def new_row_id() -> str:
+    """Primary key for rows in report-service tables. Prisma generates their ids in the client
+    (`@default(cuid())`), so the columns have no database default and raw INSERTs must send one."""
+    return str(uuid4())
+
+
 def log_audit(
     endpoint: str,
     action: str,
@@ -720,10 +726,11 @@ def log_audit(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO ai_audit_log ("branchId", endpoint, action, "actorId", success, "latencyMs", metadata, "createdAt")
-                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
+                    INSERT INTO ai_audit_log (id, "branchId", endpoint, action, "actorId", success, "latencyMs", metadata, "createdAt")
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
                     """,
                     (
+                        new_row_id(),
                         branch_id,
                         endpoint,
                         action,
@@ -2146,8 +2153,8 @@ def rebuild_revenue_forecast_internal(payload: ForecastRebuildPayload) -> dict[s
                     for item in generated:
                         cur.execute(
                             """
-                            INSERT INTO sales_forecast ("branchId", "forecastDate", granularity, "predictedRevenue", "confidenceLow", "confidenceHigh", confidence, "modelVersion", mape, "generatedAt")
-                            VALUES (%s, %s::date, %s, %s, %s, %s, %s, %s, %s, NOW())
+                            INSERT INTO sales_forecast (id, "branchId", "forecastDate", granularity, "predictedRevenue", "confidenceLow", "confidenceHigh", confidence, "modelVersion", mape, "generatedAt")
+                            VALUES (%s, %s, %s::date, %s, %s, %s, %s, %s, %s, %s, NOW())
                             ON CONFLICT ("branchId", "forecastDate", granularity)
                             DO UPDATE SET
                               "predictedRevenue" = EXCLUDED."predictedRevenue",
@@ -2159,6 +2166,7 @@ def rebuild_revenue_forecast_internal(payload: ForecastRebuildPayload) -> dict[s
                               "generatedAt" = NOW()
                             """,
                             (
+                                new_row_id(),
                                 payload.branchId,
                                 item["date"],
                                 payload.granularity,
@@ -2782,10 +2790,11 @@ def sentiment_analyze(payload: SentimentAnalyzePayload, request: Request) -> dic
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        INSERT INTO sentiment_analysis ("branchId", "sourceType", "sourceId", "originalText", label, confidence, reason, "modelVersion", "analyzedAt")
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        INSERT INTO sentiment_analysis (id, "branchId", "sourceType", "sourceId", "originalText", label, confidence, reason, "modelVersion", "analyzedAt")
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                         """,
                         (
+                            new_row_id(),
                             payload.branchId,
                             str(payload.sourceType or "CHAT").upper(),
                             payload.sourceId,
