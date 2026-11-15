@@ -36,8 +36,8 @@ export class ProxyController {
       const pathRewrite =
         route.path === '/api/v1/payments'
           ? (path: string) => {
-              if (/^\/api\/v1\/payments\/webhook(?:\/|$)/.test(path)) {
-                return path.replace(/^\/api\/v1\/payments\/webhook/, '/api/payment/webhook/sepay');
+              if (/^\/api\/v1\/payments\/webhook(?:\/|$)/i.test(path)) {
+                return path.replace(/^\/api\/v1\/payments\/webhook/i, '/api/payment/webhook/sepay');
               }
               return path;
             }
@@ -91,19 +91,21 @@ export class ProxyController {
 
   @All('api/*path')
   async handleProxy(@Req() req: Request, @Res() res: Response) {
+    this.canonicalizeRequestUrl(req);
     this.stripClientActorHeaders(req);
     this.attachBearerFromQueryForRealtime(req);
     await this.enforceActiveStaffAccount(req);
-    const isBranchOrdersPath = /^\/api\/branches\/[^/]+\/orders(\/|$)/.test(req.path);
-    const isBranchCartValidatePath = /^\/api\/branches\/[^/]+\/cart\/validate(\/|$)/.test(req.path);
-    const isBranchInvoicesPath = /^\/api\/branches\/[^/]+\/invoices(\/|$)/.test(req.path);
-    const isBranchChatPath = /^\/api\/branches\/[^/]+\/chat\/sessions(\/|$)/.test(req.path);
-    const isChatSessionPath = /^\/api\/chat\/sessions\/[^/]+(\/|$)/.test(req.path);
-    const isNotificationsPath = /^\/api\/notifications(\/|$)/.test(req.path);
-    const isOrderInvoiceRegeneratePath = /^\/api\/orders\/[^/]+\/invoice\/regenerate(\/|$)/.test(req.path);
-    const isPublicInvoicePath = /^\/api\/public\/invoices\/[^/]+(\/|$)/.test(req.path);
-    const isPublicOrderInvoiceLinkPath = /^\/api\/public\/orders\/[^/]+\/invoice-link(\/|$)/.test(req.path);
-    const inventoryCompatPath = this.isInventoryCompatPath(req.path);
+    const path = this.decisionPath(req);
+    const isBranchOrdersPath = /^\/api\/branches\/[^/]+\/orders(\/|$)/.test(path);
+    const isBranchCartValidatePath = /^\/api\/branches\/[^/]+\/cart\/validate(\/|$)/.test(path);
+    const isBranchInvoicesPath = /^\/api\/branches\/[^/]+\/invoices(\/|$)/.test(path);
+    const isBranchChatPath = /^\/api\/branches\/[^/]+\/chat\/sessions(\/|$)/.test(path);
+    const isChatSessionPath = /^\/api\/chat\/sessions\/[^/]+(\/|$)/.test(path);
+    const isNotificationsPath = /^\/api\/notifications(\/|$)/.test(path);
+    const isOrderInvoiceRegeneratePath = /^\/api\/orders\/[^/]+\/invoice\/regenerate(\/|$)/.test(path);
+    const isPublicInvoicePath = /^\/api\/public\/invoices\/[^/]+(\/|$)/.test(path);
+    const isPublicOrderInvoiceLinkPath = /^\/api\/public\/orders\/[^/]+\/invoice-link(\/|$)/.test(path);
+    const inventoryCompatPath = this.isInventoryCompatPath(path);
     const route = inventoryCompatPath
       ? ({ path: '__inventory_compat__' } as any)
       : isBranchInvoicesPath || isOrderInvoiceRegeneratePath || isPublicInvoicePath || isPublicOrderInvoiceLinkPath
@@ -114,7 +116,7 @@ export class ProxyController {
         ? ({ path: '/api/chats' } as any)
       : isBranchOrdersPath || isBranchCartValidatePath
         ? ({ path: '/api/orders' } as any)
-      : SERVICE_ROUTES.find((r) => req.originalUrl.startsWith(r.path));
+      : SERVICE_ROUTES.find((r) => path.startsWith(r.path));
     if (!route) {
       return res.status(404).json({ message: 'Route not found' });
     }
@@ -148,7 +150,7 @@ export class ProxyController {
   private async enforceTableBranchScope(req: Request) {
     const method = req.method.toUpperCase();
     if (method !== 'PATCH' && method !== 'DELETE') return;
-    const match = /^\/api\/tables\/([^/]+)(?:\/|$)/.exec(req.path);
+    const match = /^\/api\/tables\/([^/]+)(?:\/|$)/i.exec(req.path);
     if (!match) return;
 
     const payload = this.parseTokenPayload(req);
@@ -218,7 +220,7 @@ export class ProxyController {
   }
 
   private authorizeRequest(req: Request) {
-    const path = req.path;
+    const path = this.decisionPath(req);
     const method = req.method.toUpperCase();
     const isBranchChatPath = /^\/api\/branches\/[^/]+\/chat\/sessions(\/|$)/.test(path);
     const isChatSessionPath = /^\/api\/chat\/sessions\/[^/]+(\/|$)/.test(path);
@@ -557,6 +559,35 @@ export class ProxyController {
       .filter((role): role is StaffRole => this.staffRoles.has(role as StaffRole));
   }
 
+  /**
+   * Collapses repeated slashes and drops a trailing slash in the request URL, so the path every
+   * rule below sees is the one forwarded upstream. Express routing ignores both (and letter case),
+   * so `/api/orders//admin/...` or `.../transfer/` used to reach handlers that the exact-match
+   * rules here never checked.
+   */
+  private canonicalizeRequestUrl(req: Request) {
+    const canonicalize = (url: string) => {
+      const queryStart = url.indexOf('?');
+      const rawPath = queryStart === -1 ? url : url.slice(0, queryStart);
+      const query = queryStart === -1 ? '' : url.slice(queryStart);
+      return rawPath.replace(/\/{2,}/g, '/').replace(/(.)\/+$/, '$1') + query;
+    };
+    req.url = canonicalize(String(req.url || ''));
+    // http-proxy-middleware v2 forwards `req.originalUrl`, so it must carry the same path.
+    if (req.originalUrl) {
+      req.originalUrl = canonicalize(String(req.originalUrl));
+    }
+  }
+
+  /**
+   * Path used for every routing and authorization decision. NestJS/Express services route
+   * case-insensitively (`/api/orders/ADMIN/menu/items` reaches the admin handler), so the rules
+   * here must compare case-insensitively too, or a capital letter skips them.
+   */
+  private decisionPath(req: Request): string {
+    return String(req.path || '').toLowerCase();
+  }
+
   private isInventoryCompatPath(path: string): boolean {
     return (
       /^\/api\/branches\/[^/]+\/inventory(\/|$)/.test(path) ||
@@ -574,7 +605,7 @@ export class ProxyController {
     const authHeader = String(req.headers.authorization || '');
     const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length).trim() : '';
     const queryToken = String(req.query.access_token || '').trim();
-    const token = bearer || (this.isRealtimeStreamPath(req.path) ? queryToken : '');
+    const token = bearer || (this.isRealtimeStreamPath(this.decisionPath(req)) ? queryToken : '');
     if (!token) {
       throw new UnauthorizedException('Missing bearer token');
     }
@@ -604,7 +635,7 @@ export class ProxyController {
    * in onProxyRes. Returns true when the request was rejected here.
    */
   private async isLoginRateLimited(req: Request, res: Response): Promise<boolean> {
-    if (req.method.toUpperCase() !== 'POST' || !ProxyController.LOGIN_ATTEMPT_PATHS.has(req.path)) {
+    if (req.method.toUpperCase() !== 'POST' || !ProxyController.LOGIN_ATTEMPT_PATHS.has(this.decisionPath(req))) {
       return false;
     }
 
@@ -739,7 +770,7 @@ export class ProxyController {
 
   private async validateQrOrderMenuRequest(req: Request) {
     const method = req.method.toUpperCase();
-    const path = req.path;
+    const path = this.decisionPath(req);
 
     // QR menu public flow: enforce tableId validation at gateway before proxying to order-service.
     if (method !== 'GET' || path !== '/api/orders/menu') {
@@ -822,7 +853,7 @@ export class ProxyController {
     if (String(req.headers.authorization || '').startsWith('Bearer ')) {
       return;
     }
-    if (!this.isRealtimeStreamPath(req.path)) {
+    if (!this.isRealtimeStreamPath(this.decisionPath(req))) {
       return;
     }
     const queryToken = String(req.query.access_token || '').trim();

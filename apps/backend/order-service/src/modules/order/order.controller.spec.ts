@@ -86,10 +86,10 @@ describe('OrderController', () => {
     const createDto = { name: 'Coffee' };
     const updateDto = { name: 'Tea' };
 
-    controller.listCategories('true', 'b1');
-    controller.createCategory(createDto as any);
-    controller.updateCategory('c1', updateDto as any);
-    controller.deleteCategory('c1');
+    controller.listCategories('true', 'b1', 'ADMIN');
+    controller.createCategory(createDto as any, 'ADMIN');
+    controller.updateCategory('c1', updateDto as any, 'ADMIN');
+    controller.deleteCategory('c1', 'ADMIN');
 
     expect(orderService.listMenuCategories).toHaveBeenCalledWith({ includeInactive: true, branchId: 'b1' });
     expect(orderService.createMenuCategory).toHaveBeenCalledWith(createDto);
@@ -103,13 +103,13 @@ describe('OrderController', () => {
     const valueDto = { value: 'L', priceDelta: 5000 };
     const valueUpdateDto = { value: 'XL' };
 
-    controller.listOptionGroups('false', 'b2');
-    controller.createOptionGroup(groupDto as any);
-    controller.updateOptionGroup('g1', groupUpdateDto as any);
-    controller.deleteOptionGroup('g1');
-    controller.createOptionValue('g1', valueDto as any);
-    controller.updateOptionValue('v1', valueUpdateDto as any);
-    controller.deleteOptionValue('v1');
+    controller.listOptionGroups('false', 'b2', 'ADMIN');
+    controller.createOptionGroup(groupDto as any, 'ADMIN');
+    controller.updateOptionGroup('g1', groupUpdateDto as any, 'ADMIN');
+    controller.deleteOptionGroup('g1', 'ADMIN');
+    controller.createOptionValue('g1', valueDto as any, 'ADMIN');
+    controller.updateOptionValue('v1', valueUpdateDto as any, 'ADMIN');
+    controller.deleteOptionValue('v1', 'ADMIN');
 
     expect(orderService.listMenuOptionGroups).toHaveBeenCalledWith({ includeInactive: false, branchId: 'b2' });
     expect(orderService.createMenuOptionGroup).toHaveBeenCalledWith(groupDto);
@@ -145,10 +145,10 @@ describe('OrderController', () => {
     const updateDto = { description: 'updated' };
     const queryDto = { keyword: 'promo' };
 
-    controller.listPromotions(queryDto as any);
-    controller.createPromotion(createDto as any);
-    controller.updatePromotion('p1', updateDto as any);
-    controller.disablePromotion('p1');
+    controller.listPromotions(queryDto as any, 'MANAGER');
+    controller.createPromotion(createDto as any, 'MANAGER');
+    controller.updatePromotion('p1', updateDto as any, 'MANAGER');
+    controller.disablePromotion('p1', 'MANAGER');
 
     expect(orderService.listPromotions).toHaveBeenCalledWith(queryDto);
     expect(orderService.createPromotion).toHaveBeenCalledWith(createDto);
@@ -166,7 +166,7 @@ describe('OrderController', () => {
     controller.create(createOrderDto as any);
     controller.findAll('t1', 'PENDING', '2026-01-01', '2026-01-31', 'b1', 'MANAGER', 'b1');
     controller.hasActiveOrdersForTable('t1');
-    controller.transferOrMergeTables(tableActionDto as any);
+    controller.transferOrMergeTables(tableActionDto as any, 'WAITER');
     controller.getCustomerHistory('c1', 'e@x.com', '0909', '5');
     controller.getCustomerRecommendations('c1', 'e@x.com', '0909', 'b1', 't1', '6');
     controller.findOne('o1');
@@ -215,5 +215,49 @@ describe('OrderController', () => {
   it('parses promotion params and calls service', () => {
     controller.validatePromotion('PROMO10', '120000', 'm1, m2,,m3', 'b1', 't1');
     expect(orderService.validatePromotion).toHaveBeenCalledWith('PROMO10', 120000, ['m1', 'm2', 'm3'], 'b1', 't1');
+  });
+  describe('role checks that must not depend on the gateway', () => {
+    const forbidden = (fn: () => unknown) => {
+      try {
+        fn();
+      } catch (error) {
+        return (error as Error).message;
+      }
+      return 'no error';
+    };
+
+    it.each([
+      ['createCategory', () => controller.createCategory({} as any)],
+      ['updateCategory', () => controller.updateCategory('c1', {} as any)],
+      ['deleteCategory', () => controller.deleteCategory('c1')],
+      ['createOptionGroup', () => controller.createOptionGroup({} as any)],
+      ['deleteOptionValue', () => controller.deleteOptionValue('v1')],
+      ['createMenuItem', () => controller.createMenuItem({} as any, undefined, undefined)],
+      ['updateMenuItem', () => controller.updateMenuItem('m1', {} as any, undefined, undefined)],
+      ['deleteMenuItem', () => controller.deleteMenuItem('m1', undefined, undefined)],
+      ['uploadMenuImage', () => controller.uploadMenuImage({ mimetype: 'image/png', size: 1, buffer: Buffer.from('x') })],
+      ['listPromotions', () => controller.listPromotions({} as any)],
+      ['createPromotion', () => controller.createPromotion({} as any)],
+      ['updatePromotion', () => controller.updatePromotion('p1', {} as any)],
+      ['disablePromotion', () => controller.disablePromotion('p1')],
+      ['transferOrMergeTables', () => controller.transferOrMergeTables({} as any)],
+    ])('%s rejects a request that carries no role', (_name, call) => {
+      expect(forbidden(call as () => unknown)).toBe('FORBIDDEN_ROLE');
+    });
+
+    it('menu and promotion management rejects staff below MANAGER', () => {
+      for (const role of ['WAITER', 'BARISTA', 'STAFF', 'CUSTOMER']) {
+        expect(forbidden(() => controller.createPromotion({} as any, role))).toBe('FORBIDDEN_ROLE');
+        expect(forbidden(() => controller.updateMenuItem('m1', {} as any, role, 'b1'))).toBe('FORBIDDEN_ROLE');
+      }
+      expect(orderService.createPromotion).not.toHaveBeenCalled();
+      expect(orderService.updateMenuItemForAdmin).not.toHaveBeenCalled();
+    });
+
+    it('table transfer rejects customers and baristas', () => {
+      expect(forbidden(() => controller.transferOrMergeTables({} as any, 'CUSTOMER'))).toBe('FORBIDDEN_ROLE');
+      expect(forbidden(() => controller.transferOrMergeTables({} as any, 'BARISTA'))).toBe('FORBIDDEN_ROLE');
+      expect(orderService.transferOrMergeTables).not.toHaveBeenCalled();
+    });
   });
 });
