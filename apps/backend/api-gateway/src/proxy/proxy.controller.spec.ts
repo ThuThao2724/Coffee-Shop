@@ -82,6 +82,55 @@ describe('ProxyController QR menu validation', () => {
     }
     expect(thrown instanceof BadRequestException).toBe(true);
   });
+
+  const tableFetch = (table: Record<string, unknown>) => {
+    const fetchMock = jest.fn().mockResolvedValue({ ok: true, status: 200, json: async () => table });
+    (global as any).fetch = fetchMock;
+    return fetchMock;
+  };
+  const checkMenu = async (path: string, query: Record<string, string>, authorization?: string) => {
+    const req = { method: 'GET', path, headers: authorization ? { authorization } : {}, query } as any;
+    try {
+      await (controller as any).validateQrOrderMenuRequest(req);
+      return 'allowed';
+    } catch (error) {
+      if (error instanceof BadRequestException) return 'bad request';
+      if (error instanceof ForbiddenException) return 'forbidden';
+      throw error;
+    }
+  };
+
+  it('requires a scanned table for the branch menu path too', async () => {
+    const fetchMock = tableFetch({ status: 'AVAILABLE', branchId: 'branch-a' });
+    expect(await checkMenu('/api/orders/branches/branch-a/menu', {})).toBe('bad request');
+    expect(fetchMock.mock.calls.length).toBe(0);
+    expect(await checkMenu('/api/orders/branches/branch-a/menu', { tableId: 'tbl-01' })).toBe('allowed');
+  });
+
+  it('rejects a table QR used to open another branch menu', async () => {
+    tableFetch({ status: 'AVAILABLE', branchId: 'branch-a' });
+    expect(await checkMenu('/api/orders/menu', { tableId: 'tbl-01', branchId: 'branch-b' })).toBe('bad request');
+    expect(await checkMenu('/api/orders/branches/branch-b/menu', { tableId: 'tbl-01' })).toBe('bad request');
+    expect(await checkMenu('/api/orders/menu', { tableId: 'tbl-01', branchId: 'BRANCH-A' })).toBe('allowed');
+    expect(await checkMenu('/api/orders/menu', { tableId: 'tbl-01' })).toBe('allowed');
+  });
+
+  it('does not let a table without a branch open a branch menu', async () => {
+    tableFetch({ status: 'AVAILABLE', branchId: null });
+    expect(await checkMenu('/api/orders/branches/branch-a/menu', { tableId: 'tbl-99' })).toBe('bad request');
+  });
+
+  it('treats a customer token like an anonymous guest, but lets staff skip the table', async () => {
+    (jwtServiceMock.verify as any).mockReturnValue({ sub: 'c1', role: 'CUSTOMER' });
+    expect(await checkMenu('/api/orders/menu', { branchId: 'branch-a' }, 'Bearer customer-token')).toBe('bad request');
+    expect(await checkMenu('/api/orders/branches/branch-a/menu', {}, 'Bearer customer-token')).toBe('bad request');
+    (jwtServiceMock.verify as any).mockReturnValue({ sub: 'w1', role: 'WAITER', branchId: 'branch-a' });
+    expect(await checkMenu('/api/orders/branches/branch-a/menu', {}, 'Bearer staff-token')).toBe('allowed');
+  });
+
+  it('leaves branch menu item writes to the role rules', async () => {
+    expect(await checkMenu('/api/orders/branches/branch-a/menu/items', {})).toBe('allowed');
+  });
 });
 
 describe('ProxyController path variants cannot skip authorization', () => {

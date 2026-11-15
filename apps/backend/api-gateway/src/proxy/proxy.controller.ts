@@ -805,27 +805,24 @@ export class ProxyController {
     const method = req.method.toUpperCase();
     const path = this.decisionPath(req);
 
-    // QR menu public flow: enforce tableId validation at gateway before proxying to order-service.
-    if (method !== 'GET' || path !== '/api/orders/menu') {
+    // Customers may only see a menu after scanning a table QR: both menu reads need a valid table,
+    // and the table must belong to the branch whose menu is asked for.
+    if (method !== 'GET') {
+      return;
+    }
+    const branchMenuMatch = /^\/api\/orders\/branches\/([^/]+)\/menu$/.exec(path);
+    if (path !== '/api/orders/menu' && !branchMenuMatch) {
       return;
     }
 
-    let isStaffRequest = false;
-    if (String(req.headers.authorization || '').startsWith('Bearer ')) {
-      try {
-        const roles = this.parseRolesFromToken(req);
-        isStaffRequest = roles.length > 0;
-      } catch {
-        isStaffRequest = false;
-      }
-    }
-
-    if (isStaffRequest) {
+    // Staff screens load a branch menu without a table. A customer token is not staff.
+    if (this.isStaffCaller(req)) {
       return;
     }
 
     const tableId = String(req.query.tableId || '').trim();
-    const branchId = String(req.query.branchId || '').trim();
+    // decisionPath() is lowercased, so branch ids are compared case-insensitively.
+    const branchId = (branchMenuMatch ? branchMenuMatch[1] : String(req.query.branchId || '')).trim().toLowerCase();
     const allowBranchOnlyForTest = this.configService.get<boolean>('MENU_QR_ALLOW_BRANCH_ONLY_TEST') === true;
     if (!tableId) {
       // Test-only shortcut: allow customer menu loading by branchId without tableId.
@@ -861,6 +858,12 @@ export class ProxyController {
     const tableStatus = String(payload?.status || '').toUpperCase();
     if (tableStatus === 'MAINTENANCE' || tableStatus === 'UNAVAILABLE' || tableStatus === 'CLEANING') {
       throw new ForbiddenException('Ban hien khong kha dung');
+    }
+
+    // A table QR only opens its own branch's menu (a table without a branch opens none by branch).
+    const tableBranchId = String(payload?.branchId || '').trim().toLowerCase();
+    if (branchId && tableBranchId !== branchId) {
+      throw new BadRequestException('Ban khong thuoc chi nhanh nay. Vui long quet lai QR.');
     }
   }
 
