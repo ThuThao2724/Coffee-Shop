@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { ProxyController } from './proxy.controller';
+import { ProxyController, stripUpstreamCorsHeaders } from './proxy.controller';
 
 declare function describe(name: string, fn: () => void): void;
 declare function it(name: string, fn: () => Promise<void> | void): void;
@@ -164,5 +164,19 @@ describe('ProxyController path variants cannot skip authorization', () => {
       thrown = error;
     }
     expect(thrown instanceof BadRequestException).toBe(true);
+  });
+});
+
+describe('stripUpstreamCorsHeaders', () => {
+  it('drops every CORS header sent by a service, keeping the others', () => {
+    const headers: Record<string, unknown> = {
+      'access-control-allow-origin': '*',
+      'Access-Control-Allow-Methods': 'GET,POST',
+      'access-control-allow-credentials': 'true',
+      'content-type': 'application/json',
+      vary: 'Origin',
+    };
+    stripUpstreamCorsHeaders(headers);
+    expect(Object.keys(headers).sort().join(',')).toBe('content-type,vary');
   });
 });
