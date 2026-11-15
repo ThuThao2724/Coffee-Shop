@@ -37,11 +37,14 @@ export class ChatService {
   ) {}
 
   private customerChatTokenSecret() {
-    return String(
-      this.configService.get<string>('CHAT_CUSTOMER_TOKEN_SECRET') ||
-        this.configService.get<string>('JWT_SECRET') ||
-        'chat-customer-secret-dev',
-    );
+    // No published fallback: with one, anyone could sign a customer token for any chat session.
+    const secret = String(
+      this.configService.get<string>('CHAT_CUSTOMER_TOKEN_SECRET') || this.configService.get<string>('JWT_SECRET') || '',
+    ).trim();
+    if (!secret) {
+      throw new Error('JWT_SECRET (or CHAT_CUSTOMER_TOKEN_SECRET) must be set for chat-service');
+    }
+    return secret;
   }
 
   private normalizeStatus(status?: string) {

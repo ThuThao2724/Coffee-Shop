@@ -2,6 +2,7 @@ package com.coffeeshop.tableservice.config;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -28,11 +29,25 @@ public class TableAuthFilter extends OncePerRequestFilter {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    @Value("${jwt.secret:}")
+    @Value("${jwt.secret}")
     private String jwtSecret;
 
-    @Value("${app.internal-service-token:}")
+    @Value("${app.internal-service-token}")
     private String internalServiceToken;
+
+    /**
+     * An empty JWT_SECRET (declared but blank) would make the HMAC key 32 zero bytes, so anyone could
+     * sign staff tokens. Refuse to start instead.
+     */
+    @PostConstruct
+    void requireSecrets() {
+        if (jwtSecret == null || jwtSecret.isBlank()) {
+            throw new IllegalStateException("JWT_SECRET must be set for table-service");
+        }
+        if (internalServiceToken == null || internalServiceToken.isBlank()) {
+            throw new IllegalStateException("INTERNAL_SERVICE_TOKEN must be set for table-service");
+        }
+    }
 
     @Override
     protected void doFilterInternal(
@@ -51,7 +66,7 @@ public class TableAuthFilter extends OncePerRequestFilter {
             return;
         }
 
-        if (!internalServiceToken.isBlank() && internalServiceToken.equals(token)) {
+        if (!internalServiceToken.isBlank() && constantTimeEquals(internalServiceToken, token)) {
             filterChain.doFilter(request, response);
             return;
         }

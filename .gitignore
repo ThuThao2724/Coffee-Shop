@@ -76,3 +76,6 @@ temp/
 
 # Local tunnel tooling (cloudflared.exe, logs, .env backup)
 .tools/
+
+# Eclipse/VS Code Java build output (it once carried a copy of application.properties with old secret defaults)
+apps/backend/*/bin/

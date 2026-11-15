@@ -36,6 +36,16 @@ spec:
                   key: APP_BASE_URL
             - name: SEED_TABLES_ON_STARTUP
               value: "false"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: coffee-secret
+                  key: JWT_SECRET
+            - name: INTERNAL_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coffee-secret
+                  key: INTERNAL_SERVICE_TOKEN
 ---
 apiVersion: v1
 kind: Service

@@ -29,6 +29,8 @@ export class SocketAuthService {
     if (!token) return null;
 
     const secretRaw = String(this.configService.get<string>('JWT_SECRET') || '');
+    // A blank secret would pad to a key of 32 zero bytes that anyone can sign with.
+    if (!secretRaw.trim()) return null;
     const secret = Buffer.from(secretRaw, 'utf8');
     const key = secret.length >= 32 ? secret : Buffer.concat([secret, Buffer.alloc(32 - secret.length)]);
 

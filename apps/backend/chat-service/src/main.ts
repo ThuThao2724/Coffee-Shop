@@ -11,6 +11,10 @@ async function bootstrap() {
   const logger = new Logger('ChatService');
   const nodeEnv = String(configService.get('NODE_ENV') || 'development').toLowerCase();
   const isProduction = nodeEnv === 'production';
+  if (!String(configService.get('JWT_SECRET') || '').trim()) {
+    // Socket authentication and customer chat tokens are signed with it; never run without it.
+    throw new Error('JWT_SECRET must be set for chat-service');
+  }
 
   app.enableCors({ origin: '*', credentials: true });
   app.enableShutdownHooks();

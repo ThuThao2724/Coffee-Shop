@@ -148,7 +148,7 @@ public class UserService {
     @Value("${app.payment-service-url:http://payment-service:3004}")
     private String paymentServiceUrl;
 
-    @Value("${app.internal-service-token:dev-internal-token}")
+    @Value("${app.internal-service-token}")
     private String internalServiceToken;
     @Value("${jwt.expiration:86400000}")
     private long jwtExpirationMillis;
