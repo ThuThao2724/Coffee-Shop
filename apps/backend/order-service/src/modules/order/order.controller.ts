@@ -29,6 +29,15 @@ export class OrderController {
     return String(role || '').trim().toUpperCase();
   }
 
+  /**
+   * Menu, option and promotion management. The gateway also enforces this, but these handlers
+   * must not rely on it alone: a path the gateway failed to match used to reach them with no role,
+   * which the service treated like ADMIN.
+   */
+  private assertMenuManager(role: string | undefined) {
+    return this.assertRoleAllowed(role, ['ADMIN', 'MANAGER']);
+  }
+
   private assertRoleAllowed(role: string | undefined, allowed: string[]) {
     const normalized = this.normalizeRole(role);
     if (!normalized || !allowed.includes(normalized)) {
@@ -166,7 +175,9 @@ export class OrderController {
   listCategories(
     @Query('includeInactive') includeInactive?: string,
     @Query('branchId') branchId?: string,
+    @Headers('x-actor-role') actorRole?: string,
   ) {
+    this.assertMenuManager(actorRole);
     return this.orderService.listMenuCategories({
       includeInactive: includeInactive === 'true',
       branchId,
@@ -175,18 +186,21 @@ export class OrderController {
 
   @Post('admin/menu/categories')
   @HttpCode(HttpStatus.CREATED)
-  createCategory(@Body() dto: CreateMenuCategoryDto) {
+  createCategory(@Body() dto: CreateMenuCategoryDto, @Headers('x-actor-role') actorRole?: string) {
+    this.assertMenuManager(actorRole);
     return this.orderService.createMenuCategory(dto);
   }
 
   @Patch('admin/menu/categories/:id')
-  updateCategory(@Param('id') id: string, @Body() dto: UpdateMenuCategoryDto) {
+  updateCategory(@Param('id') id: string, @Body() dto: UpdateMenuCategoryDto, @Headers('x-actor-role') actorRole?: string) {
+    this.assertMenuManager(actorRole);
     return this.orderService.updateMenuCategory(id, dto);
   }
 
   @Delete('admin/menu/categories/:id')
   @HttpCode(HttpStatus.OK)
-  deleteCategory(@Param('id') id: string) {
+  deleteCategory(@Param('id') id: string, @Headers('x-actor-role') actorRole?: string) {
+    this.assertMenuManager(actorRole);
     return this.orderService.deleteMenuCategory(id);
   }
 
@@ -194,7 +208,9 @@ export class OrderController {
   listOptionGroups(
     @Query('includeInactive') includeInactive?: string,
     @Query('branchId') branchId?: string,
+    @Headers('x-actor-role') actorRole?: string,
   ) {
+    this.assertMenuManager(actorRole);
     return this.orderService.listMenuOptionGroups({
       includeInactive: includeInactive === 'true',
       branchId,
@@ -203,35 +219,41 @@ export class OrderController {
 
   @Post('admin/menu/options/groups')
   @HttpCode(HttpStatus.CREATED)
-  createOptionGroup(@Body() dto: CreateMenuOptionGroupDto) {
+  createOptionGroup(@Body() dto: CreateMenuOptionGroupDto, @Headers('x-actor-role') actorRole?: string) {
+    this.assertMenuManager(actorRole);
     return this.orderService.createMenuOptionGroup(dto);
   }
 
   @Patch('admin/menu/options/groups/:id')
-  updateOptionGroup(@Param('id') id: string, @Body() dto: UpdateMenuOptionGroupDto) {
+  updateOptionGroup(@Param('id') id: string, @Body() dto: UpdateMenuOptionGroupDto, @Headers('x-actor-role') actorRole?: string) {
+    this.assertMenuManager(actorRole);
     return this.orderService.updateMenuOptionGroup(id, dto);
   }
 
   @Delete('admin/menu/options/groups/:id')
   @HttpCode(HttpStatus.OK)
-  deleteOptionGroup(@Param('id') id: string) {
+  deleteOptionGroup(@Param('id') id: string, @Headers('x-actor-role') actorRole?: string) {
+    this.assertMenuManager(actorRole);
     return this.orderService.deleteMenuOptionGroup(id);
   }
 
   @Post('admin/menu/options/groups/:groupId/values')
   @HttpCode(HttpStatus.CREATED)
-  createOptionValue(@Param('groupId') groupId: string, @Body() dto: CreateMenuOptionValueDto) {
+  createOptionValue(@Param('groupId') groupId: string, @Body() dto: CreateMenuOptionValueDto, @Headers('x-actor-role') actorRole?: string) {
+    this.assertMenuManager(actorRole);
     return this.orderService.createMenuOptionValue(groupId, dto);
   }
 
   @Patch('admin/menu/options/values/:id')
-  updateOptionValue(@Param('id') id: string, @Body() dto: UpdateMenuOptionValueDto) {
+  updateOptionValue(@Param('id') id: string, @Body() dto: UpdateMenuOptionValueDto, @Headers('x-actor-role') actorRole?: string) {
+    this.assertMenuManager(actorRole);
     return this.orderService.updateMenuOptionValue(id, dto);
   }
 
   @Delete('admin/menu/options/values/:id')
   @HttpCode(HttpStatus.OK)
-  deleteOptionValue(@Param('id') id: string) {
+  deleteOptionValue(@Param('id') id: string, @Headers('x-actor-role') actorRole?: string) {
+    this.assertMenuManager(actorRole);
     return this.orderService.deleteMenuOptionValue(id);
   }
 
@@ -244,6 +266,7 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
+    this.assertMenuManager(actorRole);
     return this.orderService.listMenuItemsForAdmin({
       keyword,
       categoryId,
@@ -259,6 +282,7 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
+    this.assertMenuManager(actorRole);
     return this.orderService.createMenuItemForAdmin(dto, { role: actorRole, branchId: actorBranchId });
   }
 
@@ -269,6 +293,7 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
+    this.assertMenuManager(actorRole);
     return this.orderService.updateMenuItemForAdmin(id, dto, { role: actorRole, branchId: actorBranchId });
   }
 
@@ -279,13 +304,15 @@ export class OrderController {
     @Headers('x-actor-role') actorRole?: string,
     @Headers('x-actor-branch-id') actorBranchId?: string,
   ) {
+    this.assertMenuManager(actorRole);
     return this.orderService.deleteMenuItemForAdmin(id, { role: actorRole, branchId: actorBranchId });
   }
 
   @Post('admin/menu/images/upload')
   @UseInterceptors(FileInterceptor('file'))
   @HttpCode(HttpStatus.CREATED)
-  uploadMenuImage(@UploadedFile() file?: any) {
+  uploadMenuImage(@UploadedFile() file?: any, @Headers('x-actor-role') actorRole?: string) {
+    this.assertMenuManager(actorRole);
     if (!file) {
       throw new BadRequestException('Thieu file anh');
     }
@@ -307,24 +334,28 @@ export class OrderController {
 
   // ── Promotion Management (M-17..M-18) ───────────────────
   @Get('admin/promotions')
-  listPromotions(@Query() query: QueryPromotionDto) {
+  listPromotions(@Query() query: QueryPromotionDto, @Headers('x-actor-role') actorRole?: string) {
+    this.assertMenuManager(actorRole);
     return this.orderService.listPromotions(query);
   }
 
   @Post('admin/promotions')
   @HttpCode(HttpStatus.CREATED)
-  createPromotion(@Body() dto: CreatePromotionDto) {
+  createPromotion(@Body() dto: CreatePromotionDto, @Headers('x-actor-role') actorRole?: string) {
+    this.assertMenuManager(actorRole);
     return this.orderService.createPromotion(dto);
   }
 
   @Patch('admin/promotions/:id')
-  updatePromotion(@Param('id') id: string, @Body() dto: UpdatePromotionDto) {
+  updatePromotion(@Param('id') id: string, @Body() dto: UpdatePromotionDto, @Headers('x-actor-role') actorRole?: string) {
+    this.assertMenuManager(actorRole);
     return this.orderService.updatePromotion(id, dto);
   }
 
   @Post('admin/promotions/:id/disable')
   @HttpCode(HttpStatus.OK)
-  disablePromotion(@Param('id') id: string) {
+  disablePromotion(@Param('id') id: string, @Headers('x-actor-role') actorRole?: string) {
+    this.assertMenuManager(actorRole);
     return this.orderService.disablePromotion(id);
   }
 
@@ -367,7 +398,8 @@ export class OrderController {
 
   @Post('table-actions/transfer')
   @HttpCode(HttpStatus.OK)
-  transferOrMergeTables(@Body() dto: TableActionDto) {
+  transferOrMergeTables(@Body() dto: TableActionDto, @Headers('x-actor-role') actorRole?: string) {
+    this.assertRoleAllowed(actorRole, ['ADMIN', 'MANAGER', 'WAITER', 'STAFF']);
     return this.orderService.transferOrMergeTables(dto);
   }
 
