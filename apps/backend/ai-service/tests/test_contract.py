@@ -3,7 +3,8 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
-client = TestClient(app)
+# ai-service refuses requests without the actor headers the gateway adds; act as an admin by default.
+client = TestClient(app, headers={'x-actor-role': 'ADMIN', 'x-actor-user-id': 'contract-test'})
 
 
 def test_health():
@@ -243,7 +244,38 @@ def test_report_chat_manager_hides_sql():
             'role': 'MANAGER',
             'question': 'Có cảnh báo bất thường nào không?',
         },
+        headers={'x-actor-role': 'MANAGER', 'x-actor-branch-id': 'branch-e2e', 'x-actor-user-id': 'manager-1'},
     )
     assert response.status_code == 200
     payload = response.json()
     assert payload.get('sql') is None
+
+
+# ai-service must not rely on the gateway alone: every data endpoint checks the actor itself.
+GUARDED_GETS = [
+    '/api/ai/forecast/top-products?branchId=branch-a&date=2026-11-15',
+    '/api/ai/forecast/hourly-profile?branchId=branch-a',
+    '/api/ai/forecast/weather?branchId=branch-a',
+    '/api/ai/forecast/ingredients?branchId=branch-a',
+    '/api/ai/recommend?branchId=branch-a',
+    '/api/ai/recommend/popular?branchId=branch-a',
+]
+
+
+def test_data_endpoints_refuse_requests_without_an_actor():
+    anonymous = TestClient(app)
+    for path in GUARDED_GETS:
+        assert anonymous.get(path).status_code == 401, path
+    assert anonymous.post('/api/ai/kb/reload').status_code == 401
+    assert anonymous.post('/api/ai/chat', json={'message': 'Doanh thu hôm nay?'}).status_code == 401
+    assert anonymous.post('/api/ai/recommend/feedback', json={
+        'branchId': 'branch-a', 'sourceItemId': 'i1', 'targetItemId': 'i2', 'action': 'click',
+    }).status_code == 401
+
+
+def test_data_endpoints_keep_managers_in_their_branch():
+    other_branch_manager = {'x-actor-role': 'MANAGER', 'x-actor-branch-id': 'branch-b', 'x-actor-user-id': 'm2'}
+    for path in GUARDED_GETS:
+        assert client.get(path, headers=other_branch_manager).status_code == 403, path
+    waiter = {'x-actor-role': 'WAITER', 'x-actor-branch-id': 'branch-a', 'x-actor-user-id': 'w1'}
+    assert client.get('/api/ai/recommend/popular?branchId=branch-a', headers=waiter).status_code == 403

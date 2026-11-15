@@ -48,8 +48,11 @@ KB_REFRESH_INTERVAL_MINUTES = int(os.getenv("AI_KB_REFRESH_INTERVAL_MINUTES", "3
 AI_FORECAST_CRON_ENABLED = os.getenv("AI_FORECAST_CRON_ENABLED", "true").strip().lower() in {"1", "true", "yes"}
 AI_FORECAST_CRON_HOUR_UTC = int(os.getenv("AI_FORECAST_CRON_HOUR_UTC", "19"))  # 02:00 ICT ~= 19:00 UTC (previous day)
 CHAT_SERVICE_API_URL = os.getenv("CHAT_SERVICE_API_URL", "http://chat-service:3007/api/chats").strip().rstrip("/")
-AI_ENFORCE_RBAC = os.getenv("AI_ENFORCE_RBAC", "false").strip().lower() in {"1", "true", "yes"}
-AI_ALLOW_LEGACY_NO_AUTH = os.getenv("AI_ALLOW_LEGACY_NO_AUTH", "true").strip().lower() in {"1", "true", "yes"}
+AI_ENFORCE_RBAC = os.getenv("AI_ENFORCE_RBAC", "true").strip().lower() in {"1", "true", "yes"}
+AI_ALLOW_LEGACY_NO_AUTH = os.getenv("AI_ALLOW_LEGACY_NO_AUTH", "false").strip().lower() in {"1", "true", "yes"}
+# Same roles the gateway allows on /api/ai. Checked here too, so the service never relies on the
+# gateway alone (and a request without a role is refused unless AI_ALLOW_LEGACY_NO_AUTH is set).
+AI_MANAGER_ROLES = {"ADMIN", "MANAGER"}
 AI_RATE_LIMIT_PER_MINUTE = int(os.getenv("AI_RATE_LIMIT_PER_MINUTE", "120"))
 AI_RATE_LIMIT_REPORT_CHAT_PER_MINUTE = int(os.getenv("AI_RATE_LIMIT_REPORT_CHAT_PER_MINUTE", "30"))
 AI_RATE_LIMIT_CHAT_PER_MINUTE = int(os.getenv("AI_RATE_LIMIT_CHAT_PER_MINUTE", "60"))
@@ -1405,7 +1408,8 @@ def build_top_products_by_session(
 
 @app.get("/api/ai/forecast/top-products")
 @app.get("/forecast/top-products")
-def forecast_top_products(branchId: str, date: str, weeks: int = 8, limit: int = 5):
+def forecast_top_products(request: Request, branchId: str, date: str, weeks: int = 8, limit: int = 5):
+    authorize_request(request, branchId, AI_MANAGER_ROLES)
     if not ORDER_DATABASE_URL:
         raise HTTPException(status_code=503, detail="ORDER_DATABASE_URL is not configured")
     try:
@@ -1418,7 +1422,8 @@ def forecast_top_products(branchId: str, date: str, weeks: int = 8, limit: int =
 
 
 @app.get("/api/ai/forecast/hourly-profile")
-def forecast_hourly_profile(branchId: str, weeks: int = 12):
+def forecast_hourly_profile(request: Request, branchId: str, weeks: int = 12):
+    authorize_request(request, branchId, AI_MANAGER_ROLES)
     if not ORDER_DATABASE_URL:
         raise HTTPException(status_code=503, detail="ORDER_DATABASE_URL is not configured")
     days = max(1, min(weeks, 26)) * 7
@@ -1461,7 +1466,8 @@ def forecast_hourly_profile(branchId: str, weeks: int = 12):
 
 
 @app.get("/api/ai/forecast/weather")
-def forecast_weather(branchId: str, lat: float = 10.78, lon: float = 106.70, rainMm: float = 1.0):
+def forecast_weather(request: Request, branchId: str, lat: float = 10.78, lon: float = 106.70, rainMm: float = 1.0):
+    authorize_request(request, branchId, AI_MANAGER_ROLES)
     cache_key = f"{branchId}|{lat}|{lon}|{rainMm}"
     hit = WEATHER_CACHE.get(cache_key)
     if hit and time.time() - hit[0] < 3600:
@@ -1589,7 +1595,8 @@ def _forecast_weather_impl(branchId: str, lat: float, lon: float, rainMm: float)
 
 
 @app.get("/api/ai/forecast/ingredients")
-def forecast_ingredients(branchId: str, days: int = 7, weeks: int = 12, buffer: float = 0.15):
+def forecast_ingredients(request: Request, branchId: str, days: int = 7, weeks: int = 12, buffer: float = 0.15):
+    authorize_request(request, branchId, AI_MANAGER_ROLES)
     if not ORDER_DATABASE_URL:
         raise HTTPException(status_code=503, detail="ORDER_DATABASE_URL is not configured")
     inv_url = os.getenv("INVENTORY_DATABASE_URL", "").strip() or ORDER_DATABASE_URL.replace("/orderdb", "/inventorydb")
@@ -2205,12 +2212,14 @@ def rebuild_revenue_forecast_internal(payload: ForecastRebuildPayload) -> dict[s
 @metric_guard("forecast_revenue_rebuild")
 def rebuild_revenue_forecast(payload: ForecastRebuildPayload, request: Request) -> dict[str, Any]:
     enforce_rate_limit(request, "forecast_rebuild", AI_RATE_LIMIT_PER_MINUTE)
+    authorize_request(request, payload.branchId, AI_MANAGER_ROLES)
     return rebuild_revenue_forecast_internal(payload)
 
 
 @app.post("/api/ai/kb/reload")
 @metric_guard("kb_reload")
-def kb_reload() -> dict[str, Any]:
+def kb_reload(request: Request) -> dict[str, Any]:
+    authorize_request(request, None, AI_MANAGER_ROLES)
     payload = reload_knowledge_base(source="manual-api")
     return {"success": True, **payload}
 
@@ -2325,7 +2334,8 @@ def forecast_staffing(request: Request, branchId: str) -> dict[str, Any]:
 
 @app.get("/api/ai/recommend")
 @metric_guard("recommend")
-def recommend(branchId: str, limit: int = 5, customerId: str | None = None, sessionId: str | None = None) -> dict[str, Any]:
+def recommend(request: Request, branchId: str, limit: int = 5, customerId: str | None = None, sessionId: str | None = None) -> dict[str, Any]:
+    authorize_request(request, branchId, AI_MANAGER_ROLES)
     branchId = normalize_branch_id(branchId)
     safe_limit = normalize_limit(limit)
     experiment_group = assign_recommend_experiment_group(branchId, customerId, sessionId)
@@ -2363,7 +2373,8 @@ def recommend(branchId: str, limit: int = 5, customerId: str | None = None, sess
 
 @app.post("/api/ai/recommend")
 @metric_guard("recommend_post")
-def recommend_post(payload: RecommendationPayload) -> dict[str, Any]:
+def recommend_post(payload: RecommendationPayload, request: Request) -> dict[str, Any]:
+    authorize_request(request, payload.branchId, AI_MANAGER_ROLES)
     payload.branchId = normalize_branch_id(payload.branchId)
     safe_limit = normalize_limit(payload.limit)
     experiment_group = assign_recommend_experiment_group(payload.branchId, payload.customerId, None)
@@ -2405,7 +2416,8 @@ def recommend_post(payload: RecommendationPayload) -> dict[str, Any]:
 
 @app.get("/api/ai/recommend/popular")
 @metric_guard("recommend_popular")
-def recommend_popular(branchId: str, limit: int = 5) -> dict[str, Any]:
+def recommend_popular(request: Request, branchId: str, limit: int = 5) -> dict[str, Any]:
+    authorize_request(request, branchId, AI_MANAGER_ROLES)
     branchId = normalize_branch_id(branchId)
     safe_limit = normalize_limit(limit)
     items = get_popular_items(branchId, safe_limit)
@@ -2416,7 +2428,8 @@ def recommend_popular(branchId: str, limit: int = 5) -> dict[str, Any]:
 
 @app.post("/api/ai/recommend/feedback")
 @metric_guard("recommend_feedback")
-def recommend_feedback(payload: RecommendationFeedback) -> dict[str, Any]:
+def recommend_feedback(payload: RecommendationFeedback, request: Request) -> dict[str, Any]:
+    authorize_request(request, payload.branchId, AI_MANAGER_ROLES)
     payload.branchId = normalize_branch_id(payload.branchId)
     event = str(payload.event or payload.action or "click").strip().lower()
     if event not in {"shown", "click", "add_to_cart", "purchase"}:
@@ -2832,6 +2845,10 @@ def sentiment_analyze(payload: SentimentAnalyzePayload, request: Request) -> dic
 @metric_guard("chat")
 def ai_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
     enforce_rate_limit(request, "ai_chat", AI_RATE_LIMIT_CHAT_PER_MINUTE)
+    actor = authorize_request(request, payload.branchId, AI_MANAGER_ROLES)
+    if payload.branchId is None and actor["role"] == "MANAGER":
+        # A manager who names no branch gets their own, never every branch.
+        payload.branchId = actor["branchId"]
     start = time.perf_counter()
     ensure_kb_fresh()
     if payload.branchId is not None:
