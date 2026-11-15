@@ -1748,24 +1748,7 @@ public class UserService {
         if (includeSensitiveData) {
             return StaffResponse.from(user, branchName);
         }
-
-        return new StaffResponse(
-                user.getId(),
-                user.getName(),
-                null,
-                null,
-                user.getRole().name(),
-                null,
-                null,
-                user.getPreferredShift() != null ? user.getPreferredShift().name() : null,
-                user.getBranchId(),
-                branchName,
-                user.getIsActive(),
-                user.getHireDate(),
-                user.getBaseSalary(),
-                user.getSalaryType() == null ? null : user.getSalaryType().name(),
-                user.getCreatedAt()
-        );
+        return StaffResponse.coworkerView(user, branchName);
     }
 
     private String resolveBranchName(String branchId) {

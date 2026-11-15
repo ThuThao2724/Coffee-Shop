@@ -27,6 +27,30 @@ public class StaffResponse {
     private String salaryType;
     private LocalDateTime createdAt;
 
+    /**
+     * What staff below MANAGER may see about a coworker: who they are and when they work, but no
+     * contact details, codes or pay.
+     */
+    public static StaffResponse coworkerView(User user, String branchName) {
+        return new StaffResponse(
+                user.getId(),
+                user.getName(),
+                null,
+                null,
+                user.getRole().name(),
+                null,
+                null,
+                user.getPreferredShift() != null ? user.getPreferredShift().name() : null,
+                user.getBranchId(),
+                branchName,
+                user.getIsActive(),
+                null,
+                null,
+                null,
+                user.getCreatedAt()
+        );
+    }
+
     public static StaffResponse from(User user) {
         return from(user, null);
     }

@@ -180,3 +180,50 @@ describe('stripUpstreamCorsHeaders', () => {
     expect(Object.keys(headers).sort().join(',')).toBe('content-type,vary');
   });
 });
+
+describe('ProxyController public table list', () => {
+  let controller: ProxyController;
+  const configServiceMock = {
+    get: jest.fn((key: string) => (key === 'JWT_SECRET' ? 'test-secret-that-has-at-least-32-characters' : undefined)),
+  } as unknown as ConfigService;
+  const jwtServiceMock = { verify: jest.fn() } as unknown as JwtService;
+
+  const listTables = (query: Record<string, string>, authorization?: string) => {
+    const req = {
+      method: 'GET',
+      url: '/api/tables',
+      path: '/api/tables',
+      query,
+      headers: authorization ? { authorization } : {},
+    } as any;
+    try {
+      (controller as any).authorizeRequest(req);
+      return 'allowed';
+    } catch (error) {
+      return error instanceof BadRequestException ? 'branchId required' : String(error);
+    }
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    controller = new ProxyController(configServiceMock, jwtServiceMock);
+  });
+
+  it('refuses an anonymous list of every table of every branch', () => {
+    expect(listTables({})).toBe('branchId required');
+  });
+
+  it('lets the QR flow list the tables of its own branch', () => {
+    expect(listTables({ branchId: 'branch-a' })).toBe('allowed');
+  });
+
+  it('treats a customer token like an anonymous caller', () => {
+    (jwtServiceMock.verify as any).mockReturnValue({ sub: 'c1', role: 'CUSTOMER' });
+    expect(listTables({}, 'Bearer customer-token')).toBe('branchId required');
+  });
+
+  it('keeps the full list for staff', () => {
+    (jwtServiceMock.verify as any).mockReturnValue({ sub: 'm1', role: 'MANAGER', branchId: 'branch-a' });
+    expect(listTables({}, 'Bearer staff-token')).toBe('allowed');
+  });
+});
