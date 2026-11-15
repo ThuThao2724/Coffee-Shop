@@ -1,130 +1,142 @@
 ---
-description: Xử lý các việc còn tồn đọng sau PR #2 (deploy an toàn, lỗ hổng thư viện, bảo trì CI, gia cố còn thiếu, dọn dữ liệu)
-argument-hint: "[đợt hoặc mã việc, vd: dot-a | dot-b | R3 | R5,R6 | tat-ca]"
+description: Sửa các lỗi còn lại sau PR #2–#15 (cờ test, chất lượng code/CI, nâng cấp và dữ liệu cần quyết định, việc trước khi lên VPS)
+argument-hint: "[đợt hoặc mã việc, vd: dot-a | dot-b | S1 | S1,S3 | tat-ca]"
 ---
 
-# Xử lý việc còn tồn đọng — Coffee Shop
+# Sửa các lỗi còn lại — Coffee Shop
 
-Phạm vi lần này: **$ARGUMENTS**. Để trống → chỉ làm **Đợt A**. `tat-ca` → làm lần lượt Đợt A → E, **dừng báo cáo sau mỗi đợt**.
+Phạm vi lần này: **$ARGUMENTS**
+
+- **Để trống:** chỉ làm **Đợt A**.
+- `tat-ca`: làm lần lượt Đợt A → C, **dừng báo cáo sau mỗi đợt**.
+- **Đợt D** (trước khi lên VPS): chỉ làm khi tôi gọi đích danh `dot-d`.
 
 ## Bối cảnh
 
-Đợt sửa lớn trước (`/sua-loi-he-thong`, Đợt 1–6 + L22, L23) đã nằm trong **PR #2** (`feature/top-products-by-session` → `main`, 11 commit, CI 32/32 xanh). Các việc dưới đây là phần **còn lại**: những gì lần trước chỉ đề xuất, chưa kiểm chứng được, hoặc phát hiện thêm khi sửa CI. Số liệu đo ngày 2026-11-07 — **đo lại trước khi làm**, có thể đã thay đổi; việc nào đã hết thì ghi "đã hết" và bỏ qua.
-
-Nếu PR #2 **chưa merge**: làm trên nhánh mới tách từ `feature/top-products-by-session`. Nếu **đã merge**: tách nhánh mới từ `main`. Không commit thẳng lên `main`.
+- Danh sách cũ R1–R15 đã xử lý xong qua PR #2 → #7 (`c62094a`, 2026-11-14):
+  - Vá lỗ hổng npm và cả 10 image (Node 22, Spring Boot 3.5.16); NestJS 11, react-router 7.
+  - nginx chạy không phải root; thêm unit test cho payment, report, inventory.
+  - Tắt việc tự tạo tài khoản demo mật khẩu công khai mỗi lần khởi động; bước E2E chạy trên mọi PR.
+- Đợt rà soát 2026-11-15 (`/ra-soat-he-thong`) đã sửa qua PR #8 → #15, tất cả đã merge vào `main` (`40d3648`):
+  - #8 vượt quyền bằng chữ hoa / dấu `/` trong đường dẫn; #9 ai-service không lưu được dữ liệu;
+  - #10 SePay relay không xác thực, webhook không key; #11 CORS trả 500;
+  - #12 lộ danh sách bàn mọi chi nhánh và lương đồng nghiệp; #13 khóa bí mật mặc định công khai (S1);
+  - #14 ai-service tự kiểm tra quyền; #15 xóa bộ khung NestJS cũ trong 2 service Java;
+  - dữ liệu mồ côi đã sửa trực tiếp trong database (bàn 1 gán về Trung Tâm, 6 đơn treo → CANCELLED, xóa bàn 56).
+  - Không sửa: log lỗi kết nối Postgres khi Docker khởi động lại (service tự khởi động lại; nhánh dự phòng của migrate chỉ chạy với `P3005`).
+- CI trên `main`: 24/24 job xanh, có E2E.
+- Các mục dưới đây **kiểm chứng ngày 2026-11-15**. Đo lại trước khi làm. Mục nào đã hết thì ghi "đã hết" và bỏ qua.
+- Tách nhánh mới từ `main` cho mỗi đợt. Không commit thẳng lên `main`.
 
 ## Quy tắc bắt buộc
 
-1. **Kiểm chứng trước → sửa → kiểm chứng lại**, báo cả hai kết quả.
-2. **Không phá dữ liệu thật.** Thử ghi bằng mã giả hoặc dữ liệu tiền tố `TEST`, xóa sạch sau khi thử. Trước khi động vào database: `pg_dump` toàn bộ vào thư mục scratchpad và báo đường dẫn.
-3. **Không đọc/in giá trị bí mật** (`.env`, khóa, mật khẩu). Việc **ghi khóa bí mật vào `.env`** sẽ bị chặn tự động → soạn lệnh để **tôi tự chạy**, rồi kiểm chứng bằng cách so mã băm (không in giá trị). Đổi JWT secret hoặc mật khẩu Postgres **phải hỏi trước**.
-4. Nạp skill phù hợp trước khi sửa: `nestjs-expert`, `prisma-expert`, `java-pro`, `fastapi-pro`, `react-best-practices`, `docker-expert`, `api-security-best-practices`, `api-integration-specialist`.
-5. Sửa gọn, đúng chỗ. **Không commit/push** trừ khi tôi yêu cầu.
-6. Sau mỗi đợt: build lại **chỉ** service bị sửa, kiểm tra `docker compose ps`, chạy lại mục *Kiểm chứng*; nếu đụng CI thì **tái hiện job CI trên bản checkout sạch** (container `node:20.19-bookworm-slim` / `python:3.11-slim`) trước khi push.
-
-## Lưu ý môi trường (đã vấp, đừng lặp lại)
-
-- Chạy `docker compose` từ **gốc repo**. Service Java build lâu → chạy nền.
-- Chuyển container sang user không phải root từng làm **order-service sập**: thư viện log ghi vào `./logs`. Trước khi đổi quyền, tìm cả chỗ **thư viện** ghi file, không chỉ code của mình; đổi **từng service một** và có kế hoạch quay lại.
-- Python trên Windows đọc stdin bằng cp1252 → khi đọc JSON từ `curl`, dùng `sys.stdin.buffer.read().decode('utf-8')`. Viết script có `\b`, `\1` ra **file** thay vì lồng trong `bash -c`/`printf` (đã từng biến thành ký tự điều khiển).
-- Máy chưa có `gh`; git push dùng Git Credential Manager. Đọc trạng thái PR/CI qua `https://api.github.com/repos/ThuThao2724/Coffee-Shop/...` (công khai, không cần token); log đầy đủ cần đăng nhập — dùng annotations của check-run.
-- Lint của CI chạy `eslint --fix`: khi tái hiện, chạy trên **bản sao** để không định dạng lại hàng loạt file trong repo.
-
----
-
-## Đợt A — Deploy an toàn (R1–R4)
-
-### R1. `.env` trên VPS trước khi merge PR #2
-- Job **Deploy (main only)** tự chạy khi merge (nếu có secret `DEPLOY_*`) và chạy `docker compose up -d --build` trên VPS. Compose giờ **bắt buộc** `JWT_SECRET` và `INTERNAL_SERVICE_TOKEN` (`${VAR:?...}`).
-- **Việc:** soạn checklist + lệnh để tôi chạy trên VPS: kiểm tra 2 biến có mặt (không in giá trị), tạo `INTERNAL_SERVICE_TOKEN` bằng `openssl rand -hex 32` nếu đang là `dev-internal-token`, chạy `docker compose config -q`.
-- **Kiểm chứng:** `docker compose config -q` trên VPS thoát 0. Sau deploy: 13 container healthy; log Prisma có `No pending migrations` hoặc `baselining 0_init` (lần đầu, đã có cơ chế tự xử lý P3005).
-
-### R2. Đường dẫn công khai ổn định cho webhook SePay và QR bàn
-- Hiện dùng Cloudflare **quick tunnel** (`scripts/start-tunnel.ps1`): đổi URL mỗi lần máy ngủ/đổi mạng → phải sửa webhook SePay và in lại QR.
-- **Việc:** đề xuất và (nếu tôi đồng ý, có domain) cấu hình **named tunnel** hoặc domain VPS: `APP_BASE_URL`, `ALLOWED_ORIGINS`, URL webhook SePay, tạo lại QR bàn. Không làm khi tôi chưa có domain.
-- **Kiểm chứng:** khởi động lại máy/tunnel, URL giữ nguyên; `POST /api/v1/payments/webhook` qua domain có key → `200`.
-
-### R3. Đổi JWT secret (chỉ khi tôi đồng ý)
-- `JWT_SECRET` hiện 37 ký tự. Đổi → **mọi người bị đăng xuất**. Đề xuất thời điểm (quán đóng cửa), soạn lệnh để tôi chạy, kiểm chứng token cũ bị từ chối, đăng nhập lại được.
-
-### R4. Mật khẩu Postgres mặc định (chỉ khi tôi đồng ý)
-- `POSTGRES_PASSWORD`, `USER_DB_PASSWORD`, `TABLE_DB_PASSWORD` đang là giá trị mặc định yếu; cổng DB chỉ mở `127.0.0.1` nên rủi ro thấp ở máy dev, **cao hơn trên VPS**.
-- **Việc:** kế hoạch đổi: `ALTER USER` trong Postgres + cập nhật **mọi** `*_DATABASE_URL`/`SPRING_DATASOURCE_PASSWORD`/`REPORT_*` cùng lúc, khởi động lại theo thứ tự. Trình bày, hỏi, rồi soạn lệnh cho tôi chạy.
+1. **Kiểm chứng trước → sửa → kiểm chứng lại**, báo cả hai kết quả. Logic có sửa thì phải có test, và thử cố ý làm hỏng (trên bản sao) để chắc test báo đỏ.
+2. **Không phá dữ liệu thật.**
+   - Dữ liệu thử dùng tiền tố `TEST`, xóa sạch sau khi thử.
+   - Trước khi động vào database: `pg_dumpall | gzip` vào scratchpad, báo đường dẫn.
+   - Phép thử khó dọn thì chạy trên bộ hệ thống tách riêng `-p coffe-e2e`.
+3. **Không đọc/in giá trị bí mật.**
+   - Việc ghi khóa vào `.env` bị chặn tự động: soạn lệnh để **tôi tự chạy**, rồi kiểm chứng bằng mã băm.
+   - Đổi JWT secret, mật khẩu Postgres hay mật khẩu tài khoản **phải hỏi trước**.
+4. **Nâng major** (NestJS, Prisma, React, Vite, Spring Boot, Postgres): liệt kê lý do và rủi ro rồi **hỏi**.
+5. **Không commit, không push khi tôi chưa đồng ý.** Khi tôi đồng ý: push nhánh, rồi mở sẵn trang tạo PR với mô tả tiếng Việt điền sẵn.
+6. Nạp skill phù hợp trước khi sửa: `java-pro`, `nestjs-expert`, `docker-expert`, `api-security-best-practices`, `react-best-practices`.
+7. **Quy trình build/test/quét và lưu ý môi trường:** đọc và làm theo `.claude/commands/sua-loi-du-an.md`, mục *Quy trình cho mỗi lỗi* và *Lưu ý môi trường*. Điểm chính:
+   - Ổ C gần đầy làm Docker treo.
+   - Build từng service một.
+   - Maven hay ngắt mạng, nên thử lại.
+   - Lockfile tạo bằng npm 10.9 của `node:22-bookworm-slim`.
+   - File `.sh` phải là LF.
 
 ---
 
-## Đợt B — Lỗ hổng thư viện npm (R5)
+## Đợt A — Gia cố cấu hình (S2, S4, S11)
 
-### R5. `npm audit` báo critical/high ở mọi service
-- Đo ngày 2026-11-07 (lockfile hiện tại):
+S1 (khóa bí mật mặc định công khai): **đã xong**, PR #13.
 
-  | Service | critical | high | moderate |
-  |---|---|---|---|
-  | api-gateway | 2 | 23 | 10 |
-  | order-service | 2 | 23 | 14 |
-  | chat-service | 2 | 26 | 9 |
-  | inventory-service | 2 | 25 | 16 |
-  | payment-service | 2 | 24 | 16 |
-  | report-service | 2 | 22 | 17 |
-  | frontend | 0 | 12 | 13 |
+### S2. `MENU_QR_ALLOW_BRANCH_ONLY_TEST` mặc định `true` trong compose
 
-- CI vẫn xanh vì bước audit chỉ báo cáo (`|| true`).
+- **Bằng chứng:** `docker-compose.yml` ghi `${MENU_QR_ALLOW_BRANCH_ONLY_TEST:-true}`, trong khi code gateway và `.env.example` đều mặc định `false`. Cờ này cho người **chưa đăng nhập** gọi `GET /api/orders/menu?branchId=` mà không cần mã bàn.
+- **Cần xác định trước:** những trang frontend gọi `/orders/menu` chỉ với `branchId` (`Inventory.tsx:193`, `Kitchen.tsx:175`, `Orders.tsx:457`, `Tables.tsx:110`) là trang nhân viên, có token, nên không bị ảnh hưởng. Riêng `CustomerMenu.tsx` (dòng 1052, 2118) thì phải xem nhánh nào gọi **không kèm** `tableId` khi khách chưa đăng nhập.
+- **Việc:** nếu không trang khách nào cần, đổi mặc định compose về `false`. Nếu có, báo tôi và giữ nguyên.
+- **Kiểm chứng:**
+  - Chưa đăng nhập, chỉ có `branchId` → trước `200`, sau `400`.
+  - Có `tableId` thật → vẫn `200`, menu QR hiển thị.
+  - Trang nhân viên (có token) vẫn tải menu.
+
+### S4. `CoffeeTable.status` thiếu `@Builder.Default`
+
+- **Bằng chứng:** `private TableStatus status = TableStatus.AVAILABLE;` trong entity có `@Builder`, nên builder bỏ qua giá trị mặc định (compiler có cảnh báo). Hiện 2 chỗ gọi (`TableService.java:76`, `TableDataSeeder.java:62`) đều tự đặt `status`, nên **chưa thành lỗi**.
+- **Việc:** thêm `@Builder.Default`; tìm các entity khác có cùng bẫy (`grep` trường có giá trị khởi tạo trong class `@Builder`).
+- **Kiểm chứng:** cảnh báo compiler biến mất; thêm test `CoffeeTable.builder()...build().getStatus() == AVAILABLE` (bỏ annotation thì test đỏ).
+
+### S11. Gateway coi token khách là nhân viên khi xem menu QR
+
+- **Bằng chứng (suy ra từ code):** `validateQrOrderMenuRequest` trong `apps/backend/api-gateway/src/proxy/proxy.controller.ts` bỏ qua kiểm tra mã bàn khi `parseRolesFromToken(req).length > 0`. Nhưng tập `staffRoles` mà hàm đó dùng **có cả CUSTOMER**, nên khách đã đăng nhập xem được menu chỉ bằng `branchId`, không cần mã bàn. Hiện chưa thấy được khác biệt vì S2 đang mở cho cả người chưa đăng nhập.
+- **Việc:** dùng `isStaffCaller(req)` (chỉ `activeStaffRoles`, đã có từ PR #12) thay cho `parseRolesFromToken(...).length > 0`. Làm cùng S2.
+- **Kiểm chứng:** với `MENU_QR_ALLOW_BRANCH_ONLY_TEST=false`, token khách + chỉ `branchId` → 400; token nhân viên → 200; khách quét QR có `tableId` → 200. Thêm test vào `proxy.controller.spec.ts`.
+
+---
+
+## Đợt B — Chất lượng code và CI (S3, S7)
+
+### S3. Checkstyle có sẵn vi phạm, và CI không chạy checkstyle
+
+- **Bằng chứng:** `gradle checkstyleMain` báo lỗi: table-service 7 (thiếu `{}` sau `if` trong `TableAuthFilter.java`), user-service 47 (`HrManagementService.java`, `HrRealtimeHub.java`, import thừa trong `HrManagementController.java`, `CustomerAccountController.java`...). CI chỉ chạy `./gradlew clean assemble`.
 - **Việc:**
-  1. Liệt kê các gói gây lỗi **critical** trước (thường chung cho mọi service NestJS), kèm đường dẫn phụ thuộc (`npm audit --json`, `npm ls <gói>`), và gói đó dùng lúc **chạy** hay chỉ lúc **build/dev**.
-  2. Sửa theo thứ tự an toàn: `npm audit fix` (không `--force`) → nâng phiên bản trong cùng major → `overrides` có chủ đích. **Không** nâng major của NestJS/Prisma/React/Vite trong đợt này — nếu cần, liệt kê và hỏi.
-  3. Cập nhật lockfile bằng **node 20.19** (khớp CI).
-- **Kiểm chứng:** số critical = 0; high giảm (báo trước/sau từng service); mỗi service vẫn `npm ci` + lint + build + test qua; container build và healthy; luồng chính (menu khách, đặt đơn TEST, webhook SePay có key, đăng nhập) vẫn chạy.
+  1. Sửa vi phạm, **chỉ đổi định dạng**, không đổi logic.
+  2. Thêm `checkstyleMain` vào job Java của CI (`.github/workflows/deno.yml`).
+  3. Làm thành **PR riêng**, vì thay đổi định dạng hàng loạt.
+- **Kiểm chứng:** `checkstyleMain` báo 0 lỗi (đo lại số vi phạm trước khi sửa, PR #13 đã đổi `TableAuthFilter`); `gradle test` qua (table 24, user 24 test); diff không có thay đổi ngoài định dạng (`git diff -w` gọn); CI xanh.
+
+### S7. Gói dev đã ngừng hỗ trợ
+
+- **Bằng chứng:** `npm ci` báo deprecated `supertest@6.3.4`, `rimraf@3.0.2` ở các service NestJS. Chỉ dùng lúc dev/test, không vào image (đã `npm prune --omit=dev`).
+- **Việc:** nâng `supertest` lên 7.x (đọc release notes), tìm gói nào kéo `rimraf@3`. Không nâng major NestJS, Jest.
+- **Kiểm chứng:** `npm ci` hết cảnh báo 2 gói này; lint, build, test của từng service qua; `npm audit` vẫn 0/0/0.
 
 ---
 
-## Đợt C — Bảo trì CI (R6–R8)
+## Đợt C — Cần quyết định và theo dõi (S5, S6, S9, S10)
 
-### R6. Action GitHub dùng Node 20 (bị ép chạy Node 24, sắp ngừng hỗ trợ)
-- Đang dùng: `actions/checkout@v4` (11 chỗ), `actions/setup-node@v4` (4), `actions/setup-java@v4`, `actions/setup-python@v5`, `actions/upload-artifact@v4`.
-- **Việc:** kiểm tra trên GitHub (API tags/releases) phiên bản mới nhất **hỗ trợ Node 24** của từng action, nâng cấp, đọc release notes xem có thay đổi input không.
-- **Kiểm chứng:** CI chạy xanh, annotations không còn cảnh báo "Node.js 20 is deprecated".
+### S5. Spring Boot 4 (hạn 2027-03-01)
 
-### R7. Phiên bản công cụ không cố định
-- `aquasecurity/trivy-action@v0.24.0` cũ (mới nhất v0.36.0); `ruff`, `mypy`, `pytest` cài không ghim phiên bản (lần trước ruff mới tự bật thêm luật làm CI đỏ).
-- **Việc:** ghim phiên bản cụ thể cho công cụ Python trong workflow; cân nhắc nâng trivy-action (kiểm tra input `scan-type`, `exit-code`, `format` còn tương thích).
-- **Kiểm chứng:** CI xanh; chạy lại 2 lần ra cùng kết quả.
+- **Bằng chứng:** CVE-2026-47884 và CVE-2026-47890 ở `spring-webmvc` 6.2.19 chỉ vá trong Spring Framework 7, tức là **Spring Boot 4 (major)**. Code không bị ảnh hưởng (không dùng `XsltView` hay SSE view fragments). `.trivyignore` chấp nhận tới **2027-03-01**, sau đó bước quét image của CI sẽ đỏ.
+- **Việc:** **không tự nâng.** Liệt kê những gì Spring Boot 4 thay đổi với 2 service (Jakarta EE 11, Jackson 3, Spring Security 7, các API bị bỏ đang dùng), ước lượng công sức, rồi hỏi tôi: nâng, hay gia hạn `.trivyignore` kèm lý do. Nếu nâng: bỏ các dòng `ext[...]` ghim phiên bản trong `build.gradle`.
+- **Kiểm chứng (nếu nâng):** test 2 service qua; Trivy 0 lỗi **không cần** `.trivyignore`; E2E và smoke test (đăng nhập, bàn, nhân sự SSE) qua.
 
-### R8. `ubuntu-latest` sắp chuyển sang Ubuntu 26
-- Annotation báo `ubuntu-latest` chuyển sang Ubuntu 26 từ 2026-10-19. **Việc:** quyết định ghim `ubuntu-24.04` hay để mặc định; nếu để mặc định, xác nhận CI vẫn xanh trên runner mới.
+### S6. `postgres:15-alpine` còn lỗi Go stdlib trong `gosu`
 
----
+- **Bằng chứng:** Trivy báo 26 lỗi `stdlib` (gobinary) trong `gosu`, công cụ chỉ chạy lúc khởi động để hạ quyền. Image lấy từ Docker Hub, chưa có bản vá.
+- **Việc:** `docker pull postgres:15-alpine`, quét lại. Còn lỗi thì ghi "chưa có bản vá" và bỏ qua. **Không** nâng major Postgres khi chưa hỏi, vì phải chuyển dữ liệu.
 
-## Đợt D — Gia cố còn thiếu (R9–R12)
+### S9. Bộ đếm đăng nhập sai nằm trong bộ nhớ, trong khi k8s có tự tăng số bản gateway
 
-### R9. Container frontend (nginx) vẫn chạy root
-- `frontend` uid=0 (các service khác đã chuyển). **Việc:** chuyển sang `nginxinc/nginx-unprivileged` (cổng 8080), cập nhật `nginx.conf` `listen`, mapping cổng trong compose (giữ cổng ngoài 8088), healthcheck, `scripts/start-tunnel.ps1` nếu dùng cổng trong.
-- **Kiểm chứng:** uid ≠ 0; trang khách, `/api`, `/socket.io` qua nginx vẫn chạy; header bảo mật vẫn còn.
+- **Bằng chứng:** `login-rate-limiter.ts` giữ bộ đếm trong bộ nhớ (R10 cũ ghi "không cần" vì compose chỉ chạy 1 bản). Nhưng `ops/k8s/hpa-api-gateway.yaml` tự tăng số bản gateway, mà mỗi bản có bộ đếm riêng, nên giới hạn đăng nhập sai bị chia nhỏ.
+- **Việc:** hỏi tôi có định deploy bằng k8s không.
+  - **Không:** ghi chú trong `ops/k8s/README.md` rằng k8s chưa dùng, và cần chuyển bộ đếm sang Redis trước khi dùng.
+  - **Có:** chuyển bộ đếm sang Redis (đã có trong compose).
+- **Kiểm chứng (nếu chuyển sang Redis):** 8 lần đăng nhập sai bằng email không tồn tại → từ lần thứ 6 trả `429`; khởi động lại gateway mà bộ đếm vẫn giữ; 2 bản gateway dùng chung bộ đếm.
 
-### R10. Bộ giới hạn đăng nhập sai nằm trong bộ nhớ gateway
-- `login-rate-limiter.ts` mất bộ đếm khi gateway khởi động lại và không dùng chung nếu chạy nhiều gateway. **Việc:** chỉ làm nếu sắp chạy nhiều bản gateway — chuyển sang Redis (đã có trong compose). Nếu không, ghi "không cần" và bỏ qua.
+### S10. Bàn 99 chưa thuộc chi nhánh nào
 
-### R11. Thiếu test cho phần đã sửa
-- payment-, report-, inventory-service **không có unit test** nào. **Việc:** thêm test tối thiểu cho logic vừa sửa: `resolveOrderAmount` (lấy tổng tiền từ order, từ chối đơn hủy / order-service lỗi), xử lý webhook chuyển thiếu/cộng dồn/gửi lại, `resolveBranchScope` (report), `scopeBranch`/`assertIngredientsInScope` (inventory). Test phải chạy được trong CI (`npm test`).
-- **Kiểm chứng:** test mới qua; cố ý làm hỏng logic (tạm) → test đỏ; khôi phục.
-
-### R12. Luồng Gemini của report-chat chưa được chạy thử đầu-cuối
-- Đã kiểm chứng ở mức database (role `ai_report_reader` chặn `pg_shadow`, `pg_read_file`...) và unit test, nhưng **chưa kích hoạt được** nhánh `sqlSource: gemini` bằng câu hỏi thật (câu thử đều khớp rule).
-- **Việc:** đọc `is_generic_fallback_question` để tìm câu hỏi đi vào nhánh Gemini; gọi 1–2 lần với vai trò ADMIN (tốn quota Gemini — báo trước). Thử thêm 1 câu cố ý "prompt injection" đòi đọc `pg_shadow`.
-- **Kiểm chứng:** câu hợp lệ trả `sqlSource: gemini` và có dữ liệu; câu injection bị `validate_generated_sql` loại hoặc bị role chặn, không lộ dữ liệu.
+- **Bằng chứng:** `tabledb.tables` có bàn số 99 (`1c699387-2028-474c-901f-5461ae477d52`) với `branch_id` rỗng, tạo ngày 2026-05-29. 5 đơn thử trên bàn này đã chuyển sang `CANCELLED` ngày 2026-11-15. Bàn không thuộc chi nhánh nào thì không hiện trong danh sách bàn của manager.
+- **Việc:** hỏi tôi gán bàn này cho chi nhánh nào, hay xóa (5 đơn đã hủy vẫn giữ, chỉ mất liên kết tới bàn). Sao lưu trước khi sửa.
+- **Kiểm chứng:** manager chi nhánh được gán thấy bàn 99; doanh thu đơn `COMPLETED` không đổi.
 
 ---
 
-## Đợt E — Dọn dữ liệu và việc nhỏ (R13–R15)
+## Đợt D — Trước khi lên VPS (chỉ làm khi tôi gọi `dot-d`)
 
-### R13. 6 phiếu nhập kho giả "Seed top-up" (từ tháng 9)
-- Do lỗi seed cũ (đã sửa) tạo ra; làm lệch lịch sử nhập kho, **không** ảnh hưởng số tồn hiện tại. **Việc:** liệt kê 6 phiếu (nguyên liệu, số lượng, ngày) và **hỏi tôi** giữ hay xóa. Nếu xóa: sao lưu bảng trước, xóa đúng 6 `id`, kiểm chứng tồn kho không đổi.
+Tôi sẽ sửa xong và thêm tính năng rồi mới deploy. Đến lúc đó làm theo thứ tự:
 
-### R14. Trang khách gọi `GET /api/orders?tableId=` luôn bị 403
-- `CustomerMenu.tsx` (`loadLatestOrder`) gọi rồi bỏ qua lỗi; mở quyền thì lộ đơn của khách trước cùng bàn. **Việc:** bỏ lời gọi này (đơn của khách đã lưu trong `localStorage` theo bàn) hoặc thay bằng cơ chế an toàn; không mở quyền endpoint.
-- **Kiểm chứng:** Console trang khách không còn 403; đặt đơn TEST rồi tải lại trang vẫn thấy đơn của mình.
-
-### R15. 18 file sao lưu bị `.gitignore` (`Reports.tsx.backup_*`, `*.bak`…)
-- **Việc:** liệt kê đường dẫn + ngày, **hỏi tôi** trước khi chuyển vào thư mục sao lưu (không xóa hẳn).
+| Mã | Việc | Ghi chú |
+|---|---|---|
+| R3 | Đổi `JWT_SECRET` | Mọi người bị đăng xuất: đề xuất thời điểm (quán đóng cửa), soạn lệnh để tôi chạy, kiểm chứng token cũ bị từ chối và đăng nhập lại được |
+| R4 | Đổi mật khẩu Postgres (`POSTGRES_PASSWORD`, `USER_DB_PASSWORD`, `TABLE_DB_PASSWORD`) | `ALTER USER` + cập nhật **mọi** `*_DATABASE_URL` / `SPRING_DATASOURCE_PASSWORD` / `REPORT_*` cùng lúc, khởi động lại theo thứ tự |
+| S8 | Mật khẩu tài khoản demo | `admin.test`, `manager.central`, `manager.riverside@coffeeshop.local` đang dùng thật nhưng mật khẩu công khai trên GitHub: tôi tự đổi trong ứng dụng. 4 tài khoản demo còn lại (`waiter.test`, `barista.test`, `staff.test`, `customer.test`): hỏi tôi khóa hay giữ |
+| R2 | Domain cố định | Cần tên miền: cấu hình `APP_BASE_URL`, `ALLOWED_ORIGINS`, webhook SePay, tạo lại QR bàn |
+| — | Kiểm tra cuối | `bash scripts/check-deploy-env.sh` phải qua; thêm 4 secret `DEPLOY_*` vào GitHub để job Deploy chạy thật |
 
 ---
 
@@ -133,4 +145,8 @@ Nếu PR #2 **chưa merge**: làm trên nhánh mới tách từ `feature/top-pro
 | Mã | Việc | Trạng thái (đã xong / đã hết từ trước / bỏ qua / cần quyết định / tôi phải tự làm) | File đã sửa | Kiểm chứng trước → sau |
 |---|---|---|---|---|
 
-Sau bảng: service đã build lại + trạng thái, kết quả tái hiện CI (nếu đụng CI), lệnh tôi cần tự chạy (nếu có), và **câu hỏi cho đợt tiếp theo**. Viết tiếng Việt, ngắn gọn.
+Sau bảng, ghi ngắn gọn bằng tiếng Việt:
+- Service đã build lại và trạng thái của chúng.
+- Kết quả test, quét Trivy, tái hiện CI (nếu đụng CI).
+- Lệnh tôi cần tự chạy (nếu có).
+- **Câu hỏi cho đợt tiếp theo.**
