@@ -84,9 +84,19 @@ for key in POSTGRES_PASSWORD USER_DB_PASSWORD TABLE_DB_PASSWORD; do
   warn_password "$key"
 done
 
+sepay_type="$(get_value SEPAY_IPN_AUTH_TYPE)"
 sepay_key="$(get_value SEPAY_IPN_API_KEY)"
-if [[ -z "$sepay_key" ]]; then
-  echo "WARN  SEPAY_IPN_API_KEY empty: SePay webhooks are not authenticated by API key"
+sepay_secret="$(get_value SEPAY_WEBHOOK_SECRET)"
+if [[ "${sepay_type,,}" == "none" ]]; then
+  echo "FAIL  SEPAY_IPN_AUTH_TYPE=none: anyone could mark orders as paid"; fail=1
+elif [[ -z "$sepay_key" && -z "$sepay_secret" ]]; then
+  echo "FAIL  SEPAY_IPN_API_KEY and SEPAY_WEBHOOK_SECRET are empty: SePay payments cannot be confirmed"; fail=1
+else
+  echo "OK    SePay webhook authentication"
+fi
+
+if [[ "$(get_value SEPAY_RELAY_PULL_ENABLED)" == "true" ]]; then
+  check_secret SEPAY_RELAY_SHARED_SECRET
 fi
 
 if [[ "$(get_value SEED_TEST_ACCOUNTS)" == "true" ]]; then

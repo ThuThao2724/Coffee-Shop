@@ -1,4 +1,4 @@
-import { BadRequestException, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { PaymentStatus } from '@prisma/client';
 import { PaymentService } from './payment.service';
 
@@ -20,6 +20,12 @@ function makeService(configValues: ConfigValues = {}) {
       findMany: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+    },
+    paymentRelayEvent: {
+      create: jest.fn(async ({ data }: any) => ({ id: 7, createdAt: new Date('2026-11-15T00:00:00Z'), ...data })),
+      findFirst: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
+      deleteMany: jest.fn(),
     },
   };
   const kafka = { emit: jest.fn() };
@@ -209,6 +215,86 @@ describe('PaymentService.handleWebhook (SePay IPN)', () => {
       ignored: true,
       reason: 'payment-not-found',
     });
+    expect(update).not.toHaveBeenCalled();
+  });
+});
+
+describe('PaymentService SePay authentication and relay', () => {
+  const API_KEY = 'test-ipn-key-0123456789'; // gitleaks:allow (fake key used only by this test)
+  const RELAY_SECRET = 'test-relay-secret-0123456789'; // gitleaks:allow (fake secret used only by this test)
+  const forgedTransfer = { id: 99, transferType: 'in', transferAmount: 85000, content: 'PAY ORDER1-ABC' };
+
+  it('refuses webhooks when no SePay key is configured instead of accepting them all', async () => {
+    const { service } = makeService({ SEPAY_IPN_AUTH_TYPE: 'either' });
+    const update = jest.spyOn(service as any, 'updatePaymentStatus');
+
+    await expect(service.handleWebhook(forgedTransfer, {})).rejects.toBeInstanceOf(BadRequestException);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('relay ingest is refused while the relay is not configured', async () => {
+    const { service, prisma } = makeService({ SEPAY_IPN_AUTH_TYPE: 'apikey', SEPAY_IPN_API_KEY: API_KEY });
+
+    await expect(
+      service.relayIngest(forgedTransfer, { authorization: `Apikey ${API_KEY}` }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.paymentRelayEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('relay ingest needs the SePay API key, so a forged transfer is never stored', async () => {
+    const { service, prisma } = makeService({
+      SEPAY_IPN_AUTH_TYPE: 'apikey',
+      SEPAY_IPN_API_KEY: API_KEY,
+      SEPAY_RELAY_SHARED_SECRET: RELAY_SECRET,
+    });
+
+    await expect(service.relayIngest(forgedTransfer, {})).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.relayIngest(forgedTransfer, { authorization: 'Apikey wrong-key' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.paymentRelayEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('relay ingest stores an authentic IPN without its credentials', async () => {
+    const { service, prisma } = makeService({
+      SEPAY_IPN_AUTH_TYPE: 'apikey',
+      SEPAY_IPN_API_KEY: API_KEY,
+      SEPAY_RELAY_SHARED_SECRET: RELAY_SECRET,
+    });
+
+    await service.relayIngest(forgedTransfer, {
+      authorization: `Apikey ${API_KEY}`,
+      'content-type': 'application/json',
+      'x-relay-token': RELAY_SECRET,
+    });
+
+    const stored = prisma.paymentRelayEvent.create.mock.calls[0][0].data.headers;
+    expect(stored).toEqual({ 'content-type': 'application/json' });
+  });
+
+  it('relay pull needs the shared secret, and is closed while none is configured', async () => {
+    const open = makeService({});
+    await expect(open.service.relayPull({}, {})).rejects.toBeInstanceOf(ForbiddenException);
+
+    const { service, prisma } = makeService({ SEPAY_RELAY_SHARED_SECRET: RELAY_SECRET });
+    await expect(service.relayPull({}, {})).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(service.relayPull({}, { 'x-relay-token': 'wrong' })).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.paymentRelayEvent.findMany).not.toHaveBeenCalled();
+
+    await expect(service.relayPull({}, { 'x-relay-token': RELAY_SECRET })).resolves.toMatchObject({ success: true });
+  });
+
+  it('the relay bypass header without the right secret still needs the API key', async () => {
+    const { service } = makeService({
+      SEPAY_IPN_AUTH_TYPE: 'apikey',
+      SEPAY_IPN_API_KEY: API_KEY,
+      SEPAY_RELAY_SHARED_SECRET: RELAY_SECRET,
+    });
+    const update = jest.spyOn(service as any, 'updatePaymentStatus');
+
+    await expect(
+      service.handleWebhook(forgedTransfer, { 'x-relay-internal': '1', 'x-relay-token': 'guess' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
     expect(update).not.toHaveBeenCalled();
   });
 });

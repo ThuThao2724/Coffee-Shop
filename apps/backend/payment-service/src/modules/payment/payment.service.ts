@@ -368,7 +368,26 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
     const marker = this.getHeaderValue(headers, 'x-relay-internal');
     const token = this.getHeaderValue(headers, 'x-relay-token');
     const shared = this.relaySharedSecret;
-    return marker === '1' && !!shared && token === shared;
+    return marker === '1' && !!shared && this.safeCompare(token, shared);
+  }
+
+  /** Both relay endpoints are refused unless SEPAY_RELAY_SHARED_SECRET is set and sent. */
+  private assertRelayToken(headers?: RequestHeaders) {
+    const shared = this.relaySharedSecret;
+    if (!shared) {
+      throw new ForbiddenException('SePay relay is not configured');
+    }
+    if (!this.safeCompare(this.getHeaderValue(headers, 'x-relay-token'), shared)) {
+      throw new ForbiddenException('Invalid relay token');
+    }
+  }
+
+  /** Credentials must not be stored with relay events or handed to whoever pulls them. */
+  private withoutCredentialHeaders(headers?: RequestHeaders): RequestHeaders {
+    const blocked = new Set(['authorization', 'x-secret-key', 'x-relay-token', 'x-relay-internal', 'cookie']);
+    return Object.fromEntries(
+      Object.entries(headers || {}).filter(([key]) => !blocked.has(String(key).toLowerCase())),
+    ) as RequestHeaders;
   }
 
   private verifySepayWebhookAuth(headers?: RequestHeaders) {
@@ -412,7 +431,9 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!expectedApiKey && !expectedSecretKey) {
-      return;
+      // Without any key every IPN would be accepted, i.e. anyone could mark orders paid.
+      // Refuse instead; SEPAY_IPN_AUTH_TYPE=none is the explicit opt-out for local testing.
+      throw new BadRequestException('SePay webhook authentication is not configured');
     }
 
     if (!isApiKeyMatch && !isSecretMatch) {
@@ -1951,8 +1972,14 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
   }
 
   async relayIngest(webhookDto: Record<string, any>, headers?: RequestHeaders) {
+    // The relay is SePay's public IPN target. Events pulled from it skip the API key check
+    // (canBypassSepayAuth), so the check has to happen here, before anything is stored.
+    if (!this.relaySharedSecret) {
+      throw new ForbiddenException('SePay relay is not configured');
+    }
+    this.verifySepayWebhookAuth(headers);
     const payload = (webhookDto || {}) as Record<string, any>;
-    const event = await this.pushRelayEvent(payload, headers);
+    const event = await this.pushRelayEvent(payload, this.withoutCredentialHeaders(headers));
     return {
       success: true,
       eventId: event.id,
@@ -1964,12 +1991,7 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
     params?: { sinceId?: string | number; limit?: string | number; consumer?: string },
     headers?: RequestHeaders,
   ) {
-    if (this.relaySharedSecret) {
-      const token = this.getHeaderValue(headers, 'x-relay-token');
-      if (token !== this.relaySharedSecret) {
-        throw new BadRequestException('Invalid relay token');
-      }
-    }
+    this.assertRelayToken(headers);
 
     const sinceId = Number(params?.sinceId ?? 0);
     const limit = Number(params?.limit ?? 50);
