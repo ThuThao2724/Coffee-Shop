@@ -361,6 +361,11 @@ export class ProxyController {
           /^\/api\/tables\/[^/]+\/call-staff$/.test(path) ||
           /^\/api\/tables\/[^/]+\/call-waiter$/.test(path)
         );
+      if (isPublicTableRead && path === '/api/tables' && !this.hasQueryValue(req, 'branchId') && !this.isStaffCaller(req)) {
+        // The QR flow only needs the tables of the branch in the QR code. Without a branch this
+        // listed every table id of every branch to anyone.
+        throw new BadRequestException('branchId la bat buoc');
+      }
       if (isPublicTableRead || isPublicCallStaff) {
         return;
       }
@@ -548,6 +553,19 @@ export class ProxyController {
 
     if (!hasAllowedRole) {
       throw new ForbiddenException('Insufficient permissions');
+    }
+  }
+
+  /** True for a valid staff token; anonymous callers, customers and bad tokens are not staff. */
+  private isStaffCaller(req: Request): boolean {
+    if (!String(req.headers.authorization || '').startsWith('Bearer ')) {
+      return false;
+    }
+    try {
+      // staffRoles also contains CUSTOMER; only activeStaffRoles are staff.
+      return this.parseRolesFromToken(req).some((role) => this.activeStaffRoles.has(role));
+    } catch {
+      return false;
     }
   }
 
