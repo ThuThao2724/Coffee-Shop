@@ -50,31 +50,20 @@ Phạm vi lần này: **$ARGUMENTS**
 
 ---
 
-## Đợt A — Gia cố cấu hình (S2, S4, S11)
+## Đợt A — Gia cố cấu hình (S4)
 
 S1 (khóa bí mật mặc định công khai): **đã xong**, PR #13.
 
-### S2. `MENU_QR_ALLOW_BRANCH_ONLY_TEST` mặc định `true` trong compose
+### S2 + S11. Khách phải quét QR mới xem được menu: **đã xong** (nhánh `fix/qr-menu-requires-scan`)
 
-- **Bằng chứng:** `docker-compose.yml` ghi `${MENU_QR_ALLOW_BRANCH_ONLY_TEST:-true}`, trong khi code gateway và `.env.example` đều mặc định `false`. Cờ này cho người **chưa đăng nhập** gọi `GET /api/orders/menu?branchId=` mà không cần mã bàn.
-- **Cần xác định trước:** những trang frontend gọi `/orders/menu` chỉ với `branchId` (`Inventory.tsx:193`, `Kitchen.tsx:175`, `Orders.tsx:457`, `Tables.tsx:110`) là trang nhân viên, có token, nên không bị ảnh hưởng. Riêng `CustomerMenu.tsx` (dòng 1052, 2118) thì phải xem nhánh nào gọi **không kèm** `tableId` khi khách chưa đăng nhập.
-- **Việc:** nếu không trang khách nào cần, đổi mặc định compose về `false`. Nếu có, báo tôi và giữ nguyên.
-- **Kiểm chứng:**
-  - Chưa đăng nhập, chỉ có `branchId` → trước `200`, sau `400`.
-  - Có `tableId` thật → vẫn `200`, menu QR hiển thị.
-  - Trang nhân viên (có token) vẫn tải menu.
+- Compose mặc định cờ test về `false`; `check-deploy-env.sh` báo FAIL nếu cờ bật.
+- Gateway kiểm tra bàn cho **cả** `/api/orders/menu` và `/api/orders/branches/:id/menu` (đường thứ hai trước đây không bị kiểm tra), dùng `isStaffCaller` để token khách không được coi là nhân viên, và chặn QR bàn chi nhánh A mở menu chi nhánh B.
 
 ### S4. `CoffeeTable.status` thiếu `@Builder.Default`
 
 - **Bằng chứng:** `private TableStatus status = TableStatus.AVAILABLE;` trong entity có `@Builder`, nên builder bỏ qua giá trị mặc định (compiler có cảnh báo). Hiện 2 chỗ gọi (`TableService.java:76`, `TableDataSeeder.java:62`) đều tự đặt `status`, nên **chưa thành lỗi**.
 - **Việc:** thêm `@Builder.Default`; tìm các entity khác có cùng bẫy (`grep` trường có giá trị khởi tạo trong class `@Builder`).
 - **Kiểm chứng:** cảnh báo compiler biến mất; thêm test `CoffeeTable.builder()...build().getStatus() == AVAILABLE` (bỏ annotation thì test đỏ).
-
-### S11. Gateway coi token khách là nhân viên khi xem menu QR
-
-- **Bằng chứng (suy ra từ code):** `validateQrOrderMenuRequest` trong `apps/backend/api-gateway/src/proxy/proxy.controller.ts` bỏ qua kiểm tra mã bàn khi `parseRolesFromToken(req).length > 0`. Nhưng tập `staffRoles` mà hàm đó dùng **có cả CUSTOMER**, nên khách đã đăng nhập xem được menu chỉ bằng `branchId`, không cần mã bàn. Hiện chưa thấy được khác biệt vì S2 đang mở cho cả người chưa đăng nhập.
-- **Việc:** dùng `isStaffCaller(req)` (chỉ `activeStaffRoles`, đã có từ PR #12) thay cho `parseRolesFromToken(...).length > 0`. Làm cùng S2.
-- **Kiểm chứng:** với `MENU_QR_ALLOW_BRANCH_ONLY_TEST=false`, token khách + chỉ `branchId` → 400; token nhân viên → 200; khách quét QR có `tableId` → 200. Thêm test vào `proxy.controller.spec.ts`.
 
 ---
 

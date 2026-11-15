@@ -72,7 +72,7 @@ services:
       PAYMENT_SERVICE_URL: http://payment-service:3004
       REPORT_SERVICE_URL: http://report-service:3006
       AI_SERVICE_URL: http://ai-service:3010
-      MENU_QR_ALLOW_BRANCH_ONLY_TEST: ${MENU_QR_ALLOW_BRANCH_ONLY_TEST:-true}
+      MENU_QR_ALLOW_BRANCH_ONLY_TEST: ${MENU_QR_ALLOW_BRANCH_ONLY_TEST:-false}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://coffee.example.com}
     depends_on:
       redis:

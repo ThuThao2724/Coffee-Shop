@@ -103,6 +103,10 @@ if [[ "$(get_value SEED_TEST_ACCOUNTS)" == "true" ]]; then
   echo "FAIL  SEED_TEST_ACCOUNTS=true resets the demo accounts (passwords published in the repo) on every start"; fail=1
 fi
 
+if [[ "$(get_value MENU_QR_ALLOW_BRANCH_ONLY_TEST)" == "true" ]]; then
+  echo "FAIL  MENU_QR_ALLOW_BRANCH_ONLY_TEST=true lets anyone open a branch menu without scanning a table QR"; fail=1
+fi
+
 admin_pw="$(get_value BOOTSTRAP_ADMIN_PASSWORD)"
 if [[ -n "$admin_pw" ]]; then
   if is_known_default "$admin_pw" || { (( ${#admin_pw} >= 8 )) && appears_in_repo "$admin_pw"; }; then
