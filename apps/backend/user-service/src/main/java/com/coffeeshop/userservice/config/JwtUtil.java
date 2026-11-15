@@ -19,6 +19,14 @@ public class JwtUtil {
     @Value("${jwt.expiration}")
     private long expiration;
 
+    /** A blank JWT_SECRET would sign every token with a key of zero bytes: refuse to start. */
+    @jakarta.annotation.PostConstruct
+    void requireSecret() {
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException("JWT_SECRET must be set for user-service");
+        }
+    }
+
     private SecretKey getSigningKey() {
         byte[] keyBytes = secret.getBytes(StandardCharsets.UTF_8);
         if (keyBytes.length < 32) {

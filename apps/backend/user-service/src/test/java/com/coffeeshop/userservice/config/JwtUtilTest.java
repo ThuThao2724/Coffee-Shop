@@ -47,4 +47,12 @@ class JwtUtilTest {
     void validateToken_ShouldReturnFalseForInvalidToken() {
         assertFalse(jwtUtil.validateToken("invalid.token.value"));
     }
+
+    @Test
+    void refusesToStartWithABlankSecret() {
+        JwtUtil blank = new JwtUtil();
+        ReflectionTestUtils.setField(blank, "secret", "  ");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, blank::requireSecret);
+        jwtUtil.requireSecret();
+    }
 }

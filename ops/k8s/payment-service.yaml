@@ -40,6 +40,13 @@ spec:
                 secretKeyRef:
                   name: coffee-secret
                   key: INTERNAL_SERVICE_TOKEN
+            - name: SEPAY_IPN_AUTH_TYPE
+              value: apikey
+            - name: SEPAY_IPN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: coffee-secret
+                  key: SEPAY_IPN_API_KEY
 ---
 apiVersion: v1
 kind: Service
