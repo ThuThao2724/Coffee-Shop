@@ -102,14 +102,35 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: gradle
+          # One cache per service: with a shared key only the first job to finish saved its
+          # dependencies, so user-service (pdfbox, poi...) downloaded everything on every run.
+          cache-dependency-path: |
+            ${{ matrix.service }}/build.gradle
+            ${{ matrix.service }}/gradle/wrapper/gradle-wrapper.properties
 
       - name: Ensure Gradle wrapper executable
         working-directory: ${{ matrix.service }}
         run: chmod +x ./gradlew
 
+      # Maven Central sometimes drops the TLS handshake ("Remote host terminated the handshake").
+      # Retry downloads inside Gradle, and rerun the build only when it failed on the network;
+      # a compile error fails at once.
       - name: Compile and package
         working-directory: ${{ matrix.service }}
-        run: ./gradlew --no-daemon clean assemble
+        shell: bash   # -eo pipefail: the exit status of gradlew, not of tee
+        run: |
+          for attempt in 1 2 3; do
+            gradle_args="-Dorg.gradle.internal.repository.max.retries=6 -Dorg.gradle.internal.repository.initial.backoff=2000"
+            if ./gradlew --no-daemon clean assemble $gradle_args 2>&1 | tee build.log; then
+              exit 0
+            fi
+            if ! grep -qE "Could not (GET|HEAD|download|resolve)|terminated the handshake|Connection reset|Read timed out|Connect timed out" build.log; then
+              exit 1
+            fi
+            echo "::warning::Dependency download failed (attempt $attempt), retrying in 20s"
+            sleep 20
+          done
+          exit 1
 
   python-ai-check:
     name: Python AI Check (ai-service)
