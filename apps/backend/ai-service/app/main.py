@@ -36,6 +36,11 @@ PREDICTION_ERROR_GAUGE = Gauge("ai_prediction_error_mape", "Latest prediction er
 DATA_FRESHNESS_MINUTES = Gauge("ai_data_freshness_minutes", "Latest data freshness in minutes")
 SENTIMENT_SOURCE_COUNT = Counter("ai_sentiment_source_total", "Sentiment source usage", ["source", "status"])
 
+# Order timestamps are stored as UTC without a zone (Prisma). Every query that takes the hour,
+# weekday or day of an order converts it to shop time first, e.g.
+#   ((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh')
+# Reading the UTC value directly shifted the profile by 7 hours and dropped the morning rush
+# (00-05 UTC) from the 6h-22h filter.
 REPORT_DATABASE_URL = os.getenv("REPORT_DATABASE_URL", "").strip().split("?")[0]
 ORDER_DATABASE_URL = os.getenv("ORDER_DATABASE_URL", "").strip().split("?")[0]
 PAYMENT_DATABASE_URL = os.getenv("PAYMENT_DATABASE_URL", "").strip().split("?")[0]
@@ -1154,14 +1159,14 @@ def historical_daily_revenue(branch_id: str, lookback_days: int = 90) -> list[di
         rows = execute_sql_with_url(
             ORDER_DATABASE_URL,
             """
-            SELECT DATE(o."createdAt") AS date,
+            SELECT DATE((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh') AS date,
                    COALESCE(SUM(o."totalAmount"), 0) AS revenue
             FROM orders o
             WHERE o."branchId" = %s
               AND o.status::text = 'COMPLETED'
               AND o."createdAt" >= (CURRENT_DATE - (%s::int || ' days')::interval)
-            GROUP BY DATE(o."createdAt")
-            ORDER BY DATE(o."createdAt") ASC
+            GROUP BY DATE((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh')
+            ORDER BY DATE((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh') ASC
             """,
             [branch_id, max(7, min(lookback_days, 365))],
         )
@@ -1336,7 +1341,7 @@ def build_top_products_by_session(
     filtered_sql = """
         (
             SELECT o.id,
-                   o."createdAt" AS ts
+                   ((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh') AS ts
             FROM orders o
             WHERE o."branchId" = %s
               AND o.status::text = ANY(%s)
@@ -1432,19 +1437,19 @@ def forecast_hourly_profile(request: Request, branchId: str, weeks: int = 12):
         """
         SELECT t.dow, t.h, t.revenue, t.orders, d.days
         FROM (
-            SELECT EXTRACT(DOW FROM o."createdAt")::int AS dow,
-                   EXTRACT(HOUR FROM o."createdAt")::int AS h,
+            SELECT EXTRACT(DOW FROM ((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh'))::int AS dow,
+                   EXTRACT(HOUR FROM ((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh'))::int AS h,
                    COALESCE(SUM(o."totalAmount"), 0)::bigint AS revenue,
                    COUNT(*)::int AS orders
             FROM orders o
             WHERE o."branchId" = %s AND o.status::text = 'COMPLETED'
               AND o."createdAt" >= (CURRENT_DATE - (%s::int || ' days')::interval)
-              AND EXTRACT(HOUR FROM o."createdAt") BETWEEN 6 AND 22
+              AND EXTRACT(HOUR FROM ((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh')) BETWEEN 6 AND 22
             GROUP BY 1, 2
         ) t
         JOIN (
-            SELECT EXTRACT(DOW FROM o."createdAt")::int AS dow,
-                   COUNT(DISTINCT o."createdAt"::date)::int AS days
+            SELECT EXTRACT(DOW FROM ((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh'))::int AS dow,
+                   COUNT(DISTINCT ((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)::int AS days
             FROM orders o
             WHERE o."branchId" = %s AND o.status::text = 'COMPLETED'
               AND o."createdAt" >= (CURRENT_DATE - (%s::int || ' days')::interval)
@@ -1504,12 +1509,12 @@ def _forecast_weather_impl(branchId: str, lat: float, lon: float, rainMm: float)
     rows = execute_sql_with_url(
         ORDER_DATABASE_URL,
         """
-        SELECT DATE(o."createdAt") AS date, COALESCE(SUM(o."totalAmount"), 0) AS revenue
+        SELECT DATE((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh') AS date, COALESCE(SUM(o."totalAmount"), 0) AS revenue
         FROM orders o
         WHERE o."branchId" = %s AND o.status::text = 'COMPLETED'
           AND left(o.id, 6) <> 'seedo_'
-        GROUP BY DATE(o."createdAt")
-        ORDER BY DATE(o."createdAt")
+        GROUP BY DATE((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh')
+        ORDER BY DATE((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh')
         """,
         [branchId],
     )
@@ -1610,7 +1615,7 @@ def forecast_ingredients(request: Request, branchId: str, days: int = 7, weeks: 
     qty_rows = execute_sql_with_url(
         ORDER_DATABASE_URL,
         """
-        SELECT EXTRACT(DOW FROM o."createdAt")::int AS dow,
+        SELECT EXTRACT(DOW FROM ((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh'))::int AS dow,
                oi."menuItemId" AS id,
                COALESCE(SUM(oi.quantity), 0)::int AS qty
         FROM orders o
@@ -1624,8 +1629,8 @@ def forecast_ingredients(request: Request, branchId: str, days: int = 7, weeks: 
     day_rows = execute_sql_with_url(
         ORDER_DATABASE_URL,
         """
-        SELECT EXTRACT(DOW FROM o."createdAt")::int AS dow,
-               COUNT(DISTINCT o."createdAt"::date)::int AS days
+        SELECT EXTRACT(DOW FROM ((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh'))::int AS dow,
+               COUNT(DISTINCT ((o."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)::int AS days
         FROM orders o
         WHERE o."branchId" = %s AND o.status::text = 'COMPLETED'
           AND o."createdAt" >= (CURRENT_DATE - (%s::int || ' days')::interval)
