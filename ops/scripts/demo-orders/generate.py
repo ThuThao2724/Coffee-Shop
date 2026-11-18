@@ -4,7 +4,7 @@ Usage:  python generate.py <workdir> [--days 181] [--end YYYY-MM-DD]
 
 Reads <workdir>/tables.csv and <workdir>/menu.csv (written by run.sh export) and writes
 orders.csv, order_items.csv and payments.csv there. Every id starts with "demo_" so the whole
-set can be removed with remove.sql. Times are generated in shop time (UTC+7) and stored as naive
+set can be removed with "run.sh remove". Times are generated in shop time (UTC+7) and stored as naive
 UTC, like the services store them. The random seed is fixed, so a run is reproducible.
 
 Patterns (so forecasts have something to learn): morning/lunch/afternoon/evening peaks per

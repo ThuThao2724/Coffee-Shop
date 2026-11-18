@@ -10,7 +10,6 @@
 set -euo pipefail
 export MSYS_NO_PATHCONV=1
 PG_CONTAINER="${PG_CONTAINER:-coffe-shop-postgres-1}"
-HERE="$(cd "$(dirname "$0")" && pwd)"
 
 psql_db() { # db [psql args...]  (args are passed through as-is, never re-parsed by a shell)
   local db="$1"; shift
@@ -52,7 +51,9 @@ SQL
     echo "Loaded. Restart report-service to rebuild the report tables now: docker compose restart report-service"
     ;;
   remove)
-    for db in orderdb paymentdb; do psql_db "$db" < "$HERE/remove.sql"; done
+    # Only demo_ rows; real orders and payments are never touched (order_items follow by cascade).
+    psql_db orderdb -At -c "DELETE FROM orders WHERE id LIKE 'demo\_o\_%'"
+    psql_db paymentdb -At -c "DELETE FROM payments WHERE id LIKE 'demo\_p\_%'"
     echo "Removed. Restart report-service to rebuild the report tables now: docker compose restart report-service"
     ;;
   *)
