@@ -6,7 +6,7 @@ import java.util.List;
 
 public interface TableRepository extends JpaRepository<CoffeeTable, String> {
     List<CoffeeTable> findByBranchId(String branchId);
-    java.util.Optional<CoffeeTable> findByNumber(Integer number);
-    boolean existsByNumber(Integer number);
-    boolean existsByNumberAndIdNot(Integer number, String id);
+    // Table numbers are unique per branch: every branch can have its own "Bàn 1".
+    boolean existsByBranchIdAndNumber(String branchId, Integer number);
+    boolean existsByBranchIdAndNumberAndIdNot(String branchId, Integer number, String id);
 }

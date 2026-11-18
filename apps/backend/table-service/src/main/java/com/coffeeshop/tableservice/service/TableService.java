@@ -53,31 +53,33 @@ public class TableService {
         return tableRepository.findAll();
     }
 
+    // Only the table id is accepted. Looking tables up by number as well let anyone open a menu with
+    // tableId=1 instead of scanning the QR, and is ambiguous once branches share table numbers.
     public CoffeeTable findById(String id) {
         return tableRepository.findById(id)
-                .or(() -> findByNumberFallback(id))
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Không tìm thấy bàn"));
     }
-    
-    private java.util.Optional<CoffeeTable> findByNumberFallback(String rawId) {
-        try {
-            Integer tableNumber = Integer.valueOf(String.valueOf(rawId).trim());
-            return tableRepository.findByNumber(tableNumber);
-        } catch (NumberFormatException ex) {
-            return java.util.Optional.empty();
-        }
+
+    private static String normalizeBranchId(String branchId) {
+        if (branchId == null) return null;
+        String trimmed = branchId.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     public CoffeeTable create(CreateTableRequest req) {
-        if (tableRepository.existsByNumber(req.getNumber())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Số bàn đã tồn tại");
+        String branchId = normalizeBranchId(req.getBranchId());
+        if (branchId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Bàn phải thuộc một chi nhánh");
+        }
+        if (tableRepository.existsByBranchIdAndNumber(branchId, req.getNumber())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Số bàn " + req.getNumber() + " đã có trong chi nhánh này");
         }
 
         CoffeeTable table = CoffeeTable.builder()
                 .number(req.getNumber())
                 .area(req.getArea())
                 .capacity(req.getCapacity())
-                .branchId(req.getBranchId())
+                .branchId(branchId)
                 .status(CoffeeTable.TableStatus.AVAILABLE)
                 .build();
 
@@ -94,11 +96,24 @@ public class TableService {
 
         boolean shouldRegenerateQr = false;
 
-        if (req.getNumber() != null && !req.getNumber().equals(table.getNumber())) {
-            if (tableRepository.existsByNumberAndIdNot(req.getNumber(), id)) {
-                throw new ResponseStatusException(HttpStatus.CONFLICT, "Số bàn đã tồn tại");
+        // Check the number against the branch the table will end up in (number and branch may both change).
+        Integer targetNumber = req.getNumber() != null ? req.getNumber() : table.getNumber();
+        String targetBranch = table.getBranchId();
+        if (req.getBranchId() != null) {
+            targetBranch = normalizeBranchId(req.getBranchId());
+            if (targetBranch == null) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Bàn phải thuộc một chi nhánh");
             }
-            table.setNumber(req.getNumber());
+        }
+        boolean numberChanged = !targetNumber.equals(table.getNumber());
+        boolean branchChanged = targetBranch != null && !targetBranch.equals(table.getBranchId());
+        if ((numberChanged || branchChanged) && targetBranch != null
+                && tableRepository.existsByBranchIdAndNumberAndIdNot(targetBranch, targetNumber, id)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Số bàn " + targetNumber + " đã có trong chi nhánh này");
+        }
+
+        if (numberChanged) {
+            table.setNumber(targetNumber);
             shouldRegenerateQr = true;
         }
 
@@ -113,14 +128,9 @@ public class TableService {
             table.setCapacity(req.getCapacity());
         }
 
-        if (req.getBranchId() != null) {
-            String oldBranch = table.getBranchId();
-            String nextBranch = req.getBranchId().trim();
-            table.setBranchId(nextBranch.isBlank() ? null : nextBranch);
-            if ((oldBranch == null && table.getBranchId() != null) ||
-                    (oldBranch != null && !oldBranch.equals(table.getBranchId()))) {
-                shouldRegenerateQr = true;
-            }
+        if (branchChanged) {
+            table.setBranchId(targetBranch);
+            shouldRegenerateQr = true;
         }
 
         if (req.getStatus() != null) {
