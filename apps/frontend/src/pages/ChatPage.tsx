@@ -534,7 +534,7 @@ export default function ChatPage() {
                     return (
                       <div
                         key={msg.id}
-                        className="ml-auto max-w-[95%] rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 via-white to-cyan-50 p-4 text-sm text-amber-950 shadow-sm sm:max-w-[90%]"
+                        className="ml-auto max-w-[95%] rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 via-white to-slate-50 p-4 text-sm text-amber-950 shadow-sm sm:max-w-[90%]"
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div>

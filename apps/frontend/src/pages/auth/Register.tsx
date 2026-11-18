@@ -11,8 +11,8 @@ export default function Register() {
   const { tv } = useI18n()
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-amber-50 via-orange-50 to-yellow-50">
-      <div className="max-w-lg w-full space-y-6 p-8 bg-white/90 backdrop-blur-lg rounded-2xl shadow-2xl">
+    <div className="min-h-screen flex items-center justify-center bg-espresso-sidebar bg-[radial-gradient(90%_60%_at_50%_0%,rgba(203,160,97,0.22),transparent_60%)]">
+      <div className="max-w-lg w-full space-y-6 p-8 bg-[#faf6f0] rounded-3xl shadow-[0_30px_80px_-30px_rgba(0,0,0,0.75)]">
         <div className="text-center space-y-3">
           <span className="text-5xl">☕</span>
           <h1 className="text-3xl font-bold tracking-tight text-gray-900">

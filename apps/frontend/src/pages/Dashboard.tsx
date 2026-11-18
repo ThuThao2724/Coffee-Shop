@@ -371,7 +371,7 @@ export default function Dashboard() {
                 <XAxis dataKey="name" />
                 <YAxis allowDecimals={false} />
                 <Tooltip />
-                <Bar dataKey="value" fill="#0284c7" radius={[6, 6, 0, 0]} />
+                <Bar dataKey="value" fill="#9c6f36" radius={[6, 6, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>

@@ -158,7 +158,7 @@ const orderStatuses: Array<OrderApi['status']> = ['PENDING', 'CONFIRMED', 'PREPA
 type PosBoardTone = 'neutral' | 'warning' | 'danger'
 // Same field style as the other staff pages.
 const selectClass =
-  'min-h-11 w-full rounded-xl border border-amber-100/80 bg-white/95 px-3 py-2 text-sm text-slate-800 focus:border-amber-400 focus:ring-2 focus:ring-amber-300/60 dark:border-slate-600 dark:bg-slate-800 dark:text-white dark:focus:border-amber-400 dark:focus:ring-amber-500/30'
+  'min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:border-amber-400 dark:focus:ring-amber-400/20'
 const formatDateTimeFull = (value?: string | null) => {
   if (!value) return '-'
   const date = new Date(value)
@@ -1407,12 +1407,12 @@ export default function Orders() {
               </select>
               <input type="date" className={selectClass} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
               <input type="date" className={selectClass} value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-              <Button variant="ghost" className="whitespace-nowrap rounded-xl text-sm" onClick={resetFilters}>
+              <Button variant="ghost" className="whitespace-nowrap" onClick={resetFilters}>
                 Xóa lọc
               </Button>
               <Button
                 variant="secondary"
-                className="whitespace-nowrap rounded-xl text-sm"
+                className="whitespace-nowrap"
                 onClick={() => {
                   clearPosMenuCache(selectedBranchId || undefined)
                   void loadData()
@@ -1741,7 +1741,7 @@ export default function Orders() {
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-3 sm:items-center sm:p-4">
           <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 dark:bg-slate-900">
             <p className="text-lg font-bold" title={editingOrder.id}>Sửa món đơn {maDonHangNgan(editingOrder.id)}</p>
-            <p className="mt-1 text-sm text-slate-500">S-09: Sửa số lượng, thêm/xóa món trong đơn</p>
+            <p className="mt-1 text-sm text-slate-500">Sửa số lượng, thêm/xóa món trong đơn</p>
 
             <div className="mt-3">
               <Button size="sm" variant="secondary" onClick={() => setShowAddItemPicker((prev) => !prev)}>

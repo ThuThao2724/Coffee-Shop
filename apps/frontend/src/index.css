@@ -1,5 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Playfair+Display:wght@500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -8,29 +7,30 @@
 @layer base {
   :root {
     color-scheme: light;
-    --app-bg: #fffbeb;
+    /* Espresso & vàng đồng: cream background, espresso ink, bronze accent. */
+    --app-bg: #f7f2eb;
     --app-surface: #ffffff;
-    --app-surface-soft: #fef3c7;
-    --app-ink: #1e293b;
-    --app-muted: #64748b;
-    --app-accent: #f59e0b;
-    --app-accent-strong: #d97706;
-    --app-accent-soft: rgba(245, 158, 11, 0.2);
+    --app-surface-soft: #fbf8f4;
+    --app-ink: #2a211b;
+    --app-muted: #7d6e62;
+    --app-accent: #b8894a;
+    --app-accent-strong: #9c6f36;
+    --app-accent-soft: rgba(184, 137, 74, 0.18);
     --app-radius: 1.05rem;
-    --app-shadow: 0 18px 40px -28px rgba(245, 158, 11, 0.55);
+    --app-shadow: 0 1px 2px rgba(42, 29, 16, 0.04), 0 12px 32px -24px rgba(42, 29, 16, 0.28);
   }
 
   .dark {
     color-scheme: dark;
-    --app-bg: #0f172a;
-    --app-surface: #1e293b;
-    --app-surface-soft: #1f2e47;
-    --app-ink: #f8fafc;
-    --app-muted: #cbd5e1;
-    --app-accent: #fbbf24;
-    --app-accent-strong: #f59e0b;
-    --app-accent-soft: rgba(251, 191, 36, 0.2);
-    --app-shadow: 0 20px 48px -28px rgba(251, 191, 36, 0.4);
+    --app-bg: #16110e;
+    --app-surface: #221b17;
+    --app-surface-soft: #2f2722;
+    --app-ink: #f5efe8;
+    --app-muted: #d2c6ba;
+    --app-accent: #cba061;
+    --app-accent-strong: #b8894a;
+    --app-accent-soft: rgba(203, 160, 97, 0.2);
+    --app-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 16px 40px -28px rgba(0, 0, 0, 0.7);
   }
 
   html {
@@ -43,19 +43,24 @@
   body {
     min-width: 320px;
     background:
-      radial-gradient(circle at 10% 10%, rgba(253, 230, 138, 0.32), transparent 26%),
-      radial-gradient(circle at 90% 0%, rgba(252, 211, 77, 0.22), transparent 32%),
-      linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(254, 243, 199, 0.8)),
-      var(--app-bg);
+      radial-gradient(120% 60% at 100% 0%, rgba(203, 160, 97, 0.10), transparent 55%),
+      linear-gradient(180deg, #faf6f0 0%, var(--app-bg) 60%);
+    background-attachment: fixed;
     color: var(--app-ink);
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
 
+  .dark body {
+    background:
+      radial-gradient(120% 60% at 100% 0%, rgba(203, 160, 97, 0.08), transparent 55%),
+      var(--app-bg);
+  }
+
   * {
     scrollbar-width: thin;
-    scrollbar-color: rgba(245, 158, 11, 0.35) transparent;
+    scrollbar-color: rgba(125, 110, 98, 0.35) transparent;
     box-sizing: border-box;
   }
 
@@ -90,7 +95,7 @@
   textarea.rounded.border.px-3.py-2.text-sm,
   button.rounded.border.px-3.py-2.text-sm {
     min-height: 2.75rem;
-    border-color: rgba(253, 230, 138, 0.8);
+    border-color: rgba(230, 222, 213, 1);
     border-radius: 0.75rem;
     background: rgba(255, 255, 255, 0.92);
     color: #0f172a;
@@ -104,7 +109,7 @@
   select.rounded.border.px-2.py-1.text-xs,
   button.rounded.border.px-2.py-1.text-xs {
     min-height: 2.2rem;
-    border-color: rgba(253, 230, 138, 0.95);
+    border-color: rgba(230, 222, 213, 1);
     border-radius: 0.65rem;
     background: rgba(255, 255, 255, 0.92);
     color: #0f172a;
@@ -117,9 +122,18 @@
   .dark input.rounded.border.px-2.py-1.text-xs,
   .dark select.rounded.border.px-2.py-1.text-xs,
   .dark button.rounded.border.px-2.py-1.text-xs {
-    border-color: rgba(71, 85, 105, 0.95);
-    background: rgba(30, 41, 59, 0.95);
+    border-color: rgba(70, 59, 52, 0.95);
+    background: rgba(34, 27, 23, 0.95);
     color: #f8fafc;
+  }
+
+  /* Serif display face for page and section titles: the "premium café" touch. */
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: 'Playfair Display', Georgia, serif;
+    letter-spacing: -0.01em;
   }
 
   img,
@@ -136,7 +150,7 @@
 
 @layer components {
   .glass-panel {
-    @apply rounded-[var(--app-radius)] border border-amber-100/75 bg-white/90 shadow-[var(--app-shadow)] backdrop-blur-md dark:border-slate-700/80 dark:bg-slate-800/90;
+    @apply rounded-[var(--app-radius)] border border-slate-200/70 bg-white/95 shadow-[var(--app-shadow)] backdrop-blur-md dark:border-slate-700/80 dark:bg-slate-900/90;
   }
 
   .section-title {
@@ -192,11 +206,7 @@
   }
 
   body {
-    background:
-      radial-gradient(circle at 0% 0%, rgba(253, 230, 138, 0.28), transparent 38%),
-      radial-gradient(circle at 100% 0%, rgba(253, 230, 138, 0.2), transparent 40%),
-      linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(254, 243, 199, 0.86)),
-      var(--app-bg);
+    background-attachment: scroll;
   }
 }
 

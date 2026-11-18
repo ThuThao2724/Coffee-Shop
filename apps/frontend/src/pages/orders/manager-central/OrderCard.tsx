@@ -33,8 +33,8 @@ const WAIT_STYLE: Record<Tone, string> = {
   neutral: 'bg-slate-100 text-slate-600 ring-slate-200',
 }
 
-const secondaryButtonClass = 'min-h-10 rounded-xl text-sm'
-const primaryButtonClass = 'min-h-10 rounded-xl text-sm'
+const secondaryButtonClass = 'min-h-10 text-sm'
+const primaryButtonClass = 'min-h-10 text-sm'
 
 interface OrderCardProps {
   order: ManagerOrder

@@ -55,7 +55,7 @@ export default function CreateOrderPanel({
           <select
             id="pos-create-table"
             ref={tableSelectRef}
-            className="min-h-11 w-full rounded-xl border border-amber-100/80 bg-white/95 px-3 py-2 text-sm text-slate-800 focus:border-amber-400 focus:ring-2 focus:ring-amber-300/60 dark:border-slate-600 dark:bg-slate-800 dark:text-white"
+            className="min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:border-amber-400 dark:focus:ring-amber-400/20"
             value={selectedTableId}
             onChange={(e) => setSelectedTableId(e.target.value)}
           >
