@@ -85,7 +85,7 @@ class TableServiceTest {
         request.setArea("A1");
         request.setBranchId("branch-1");
 
-        when(tableRepository.existsByNumber(10)).thenReturn(false);
+        when(tableRepository.existsByBranchIdAndNumber("branch-1", 10)).thenReturn(false);
         when(tableRepository.save(any(CoffeeTable.class)))
                 .thenAnswer(invocation -> {
                     CoffeeTable table = invocation.getArgument(0);
@@ -105,14 +105,86 @@ class TableServiceTest {
     }
 
     @Test
-    void create_ShouldThrowWhenNumberExists() {
+    void create_ShouldThrowWhenNumberExistsInTheSameBranch() {
         CreateTableRequest request = new CreateTableRequest();
         request.setNumber(9);
         request.setCapacity(4);
-        when(tableRepository.existsByNumber(9)).thenReturn(true);
+        request.setBranchId("branch-1");
+        when(tableRepository.existsByBranchIdAndNumber("branch-1", 9)).thenReturn(true);
 
         ResponseStatusException ex = assertThrows(ResponseStatusException.class, () -> tableService.create(request));
         assertEquals(HttpStatus.CONFLICT, ex.getStatusCode());
+        verify(tableRepository, times(0)).save(any(CoffeeTable.class));
+    }
+
+    @Test
+    void create_AllowsTheSameNumberInAnotherBranch() {
+        // "Bàn 1" of branch-1 exists; branch-2 still gets its own "Bàn 1".
+        CreateTableRequest request = new CreateTableRequest();
+        request.setNumber(1);
+        request.setCapacity(2);
+        request.setBranchId(" branch-2 ");
+        when(tableRepository.existsByBranchIdAndNumber("branch-2", 1)).thenReturn(false);
+        when(tableRepository.save(any(CoffeeTable.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(qrCodeService.generateQrBase64(any(CoffeeTable.class))).thenReturn("qr");
+
+        CoffeeTable created = tableService.create(request);
+
+        assertEquals(1, created.getNumber());
+        assertEquals("branch-2", created.getBranchId());
+    }
+
+    @Test
+    void create_RequiresABranch() {
+        CreateTableRequest request = new CreateTableRequest();
+        request.setNumber(3);
+        request.setCapacity(2);
+        request.setBranchId("  ");
+
+        ResponseStatusException ex = assertThrows(ResponseStatusException.class, () -> tableService.create(request));
+        assertEquals(HttpStatus.BAD_REQUEST, ex.getStatusCode());
+        verify(tableRepository, times(0)).save(any(CoffeeTable.class));
+    }
+
+    @Test
+    void findById_DoesNotLookTablesUpByNumber() {
+        // tableId=1 must not resolve to "Bàn 1": that skipped the QR scan for the customer menu.
+        when(tableRepository.findById("1")).thenReturn(Optional.empty());
+
+        ResponseStatusException ex = assertThrows(ResponseStatusException.class, () -> tableService.findById("1"));
+        assertEquals(HttpStatus.NOT_FOUND, ex.getStatusCode());
+    }
+
+    @Test
+    void update_RejectsMovingToABranchThatAlreadyHasTheNumber() {
+        CoffeeTable table = sampleTable("t9", 1);
+        table.setBranchId("branch-1");
+        when(tableRepository.findById("t9")).thenReturn(Optional.of(table));
+        when(tableRepository.existsByBranchIdAndNumberAndIdNot("branch-2", 1, "t9")).thenReturn(true);
+
+        UpdateTableRequest request = new UpdateTableRequest();
+        request.setBranchId("branch-2");
+
+        ResponseStatusException ex = assertThrows(ResponseStatusException.class, () -> tableService.update("t9", request));
+        assertEquals(HttpStatus.CONFLICT, ex.getStatusCode());
+        assertEquals("branch-1", table.getBranchId());
+    }
+
+    @Test
+    void update_KeepsTheNumberCheckInsideTheTablesBranch() {
+        CoffeeTable table = sampleTable("t10", 4);
+        table.setBranchId("branch-1");
+        when(tableRepository.findById("t10")).thenReturn(Optional.of(table));
+        when(tableRepository.existsByBranchIdAndNumberAndIdNot("branch-1", 5, "t10")).thenReturn(false);
+        when(qrCodeService.generateQrBase64(any(CoffeeTable.class))).thenReturn("qr");
+        when(tableRepository.save(any(CoffeeTable.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        UpdateTableRequest request = new UpdateTableRequest();
+        request.setNumber(5);
+
+        CoffeeTable updated = tableService.update("t10", request);
+        assertEquals(5, updated.getNumber());
+        assertEquals("branch-1", updated.getBranchId());
     }
 
     @Test
@@ -120,7 +192,7 @@ class TableServiceTest {
         CoffeeTable table = sampleTable("t1", 11);
         table.setQrCode("old");
         when(tableRepository.findById("t1")).thenReturn(Optional.of(table));
-        when(tableRepository.existsByNumberAndIdNot(22, "t1")).thenReturn(false);
+        when(tableRepository.existsByBranchIdAndNumberAndIdNot("branch-2", 22, "t1")).thenReturn(false);
         when(qrCodeService.generateQrBase64(any(CoffeeTable.class))).thenReturn("new-qr");
         when(tableRepository.save(any(CoffeeTable.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -276,6 +348,11 @@ class TableServiceTest {
         ResponseStatusException ex = assertThrows(ResponseStatusException.class, () -> tableService.callStaff("t8", null));
         assertEquals(HttpStatus.SERVICE_UNAVAILABLE, ex.getStatusCode());
         server.verify();
+    }
+
+    @Test
+    void builder_DefaultsTheStatusToAvailable() {
+        assertEquals(CoffeeTable.TableStatus.AVAILABLE, CoffeeTable.builder().number(1).capacity(2).build().getStatus());
     }
 
     private CoffeeTable sampleTable(String id, int number) {

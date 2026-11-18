@@ -8,6 +8,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -17,7 +18,9 @@ import org.hibernate.annotations.CreationTimestamp;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "tables")
+// Unique per branch (rows without a branch never conflict in Postgres), so two staff creating the
+// same number at once cannot both succeed.
+@Table(name = "tables", uniqueConstraints = @UniqueConstraint(name = "uk_tables_branch_number", columnNames = {"branch_id", "number"}))
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class CoffeeTable {
 
@@ -35,6 +38,7 @@ public class CoffeeTable {
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
+    @Builder.Default
     private TableStatus status = TableStatus.AVAILABLE;
 
     @Column(name = "qr_code", columnDefinition = "TEXT")

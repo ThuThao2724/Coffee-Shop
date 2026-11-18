@@ -50,7 +50,7 @@ Phạm vi lần này: **$ARGUMENTS**
 
 ---
 
-## Đợt A — Gia cố cấu hình (S4)
+## Đợt A — Gia cố cấu hình (đã xong)
 
 S1 (khóa bí mật mặc định công khai): **đã xong**, PR #13.
 
@@ -59,11 +59,7 @@ S1 (khóa bí mật mặc định công khai): **đã xong**, PR #13.
 - Compose mặc định cờ test về `false`; `check-deploy-env.sh` báo FAIL nếu cờ bật.
 - Gateway kiểm tra bàn cho **cả** `/api/orders/menu` và `/api/orders/branches/:id/menu` (đường thứ hai trước đây không bị kiểm tra), dùng `isStaffCaller` để token khách không được coi là nhân viên, và chặn QR bàn chi nhánh A mở menu chi nhánh B.
 
-### S4. `CoffeeTable.status` thiếu `@Builder.Default`
-
-- **Bằng chứng:** `private TableStatus status = TableStatus.AVAILABLE;` trong entity có `@Builder`, nên builder bỏ qua giá trị mặc định (compiler có cảnh báo). Hiện 2 chỗ gọi (`TableService.java:76`, `TableDataSeeder.java:62`) đều tự đặt `status`, nên **chưa thành lỗi**.
-- **Việc:** thêm `@Builder.Default`; tìm các entity khác có cùng bẫy (`grep` trường có giá trị khởi tạo trong class `@Builder`).
-- **Kiểm chứng:** cảnh báo compiler biến mất; thêm test `CoffeeTable.builder()...build().getStatus() == AVAILABLE` (bỏ annotation thì test đỏ).
+### S4. `CoffeeTable.status` thiếu `@Builder.Default`: **đã xong** (nhánh `fix/table-number-per-branch`, kèm số bàn theo chi nhánh)
 
 ---
 
