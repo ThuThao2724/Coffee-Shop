@@ -693,7 +693,7 @@ export default function Reports() {
       })
       setReportChatResult((data || null) as ReportChatResponse | null)
     } catch (error: any) {
-      toast.error(error?.response?.data?.message || 'Không truy vấn được Report Chat')
+      toast.error(error?.response?.data?.message || 'Không hỏi đáp được dữ liệu báo cáo')
     } finally {
       setReportChatLoading(false)
     }
@@ -1336,7 +1336,7 @@ export default function Reports() {
         )}
       </Card>
 
-      <Card title="Report Chat (AI)" subtitle="Hỏi đáp dữ liệu báo cáo bằng ngôn ngữ tự nhiên">
+      <Card title="Hỏi đáp báo cáo với AI" subtitle="Hỏi về doanh thu, món bán chạy... bằng tiếng Việt">
         <div className="space-y-3">
           <div className="flex flex-wrap gap-2">
             <Input
@@ -1350,7 +1350,7 @@ export default function Reports() {
             </Button>
           </div>
           <p className="text-xs text-slate-500">
-            Branch scope: <span className="font-medium text-slate-700">{effectiveAiBranchId}</span>
+            Chi nhánh: <span className="font-medium text-slate-700 dark:text-slate-200">{aiBranchName || 'Đang tải...'}</span>
           </p>
           {!reportChatResult && <p className="text-sm text-slate-500">Chưa có kết quả truy vấn.</p>}
           {reportChatResult && (
