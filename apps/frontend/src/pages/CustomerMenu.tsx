@@ -2709,11 +2709,11 @@ export default function CustomerMenu() {
 
   return (
     <div className="mx-auto max-w-7xl px-3 pb-44 pt-3 sm:px-6 sm:pb-36 sm:pt-5">
-      <div className="sticky top-0 z-30 space-y-2 bg-gradient-to-b from-[#fff8e7] via-[#fff8e7] to-transparent pb-2">
+      <div className="sticky top-0 z-30 space-y-2 bg-gradient-to-b from-[#faf6f0] via-[#faf6f0] to-transparent pb-2">
         <div className="rounded-2xl border border-amber-200 bg-white/95 px-3 py-2.5 shadow-sm">
           <div className="flex items-center justify-between gap-2">
             <div>
-              <p className="text-base font-bold text-[#3d1f00]">{resolvingTable ? 'Đang xác định bàn...' : `🪑 ${tableName}`}</p>
+              <p className="text-base font-bold text-[#2b1d14]">{resolvingTable ? 'Đang xác định bàn...' : `🪑 ${tableName}`}</p>
               {branchName ? (
                 <>
                   <p className="text-sm font-semibold text-amber-800">📍 {branchName}</p>
@@ -2731,7 +2731,7 @@ export default function CustomerMenu() {
                 waiterJustCalled
                   ? 'bg-emerald-600'
                   : canCallWaiter
-                    ? 'bg-orange-500 hover:bg-orange-600'
+                    ? 'bg-amber-600 hover:bg-amber-700'
                     : 'bg-slate-300'
               }`}
             >
@@ -2801,7 +2801,7 @@ export default function CustomerMenu() {
                 }}
                 className={`whitespace-nowrap rounded-full border px-4 py-2 text-sm font-medium transition ${
                   active
-                    ? 'border-[#78350f] bg-[#78350f] text-white'
+                    ? 'border-[#5f4223] bg-[#5f4223] text-white'
                     : 'border-amber-200 bg-white text-amber-900 hover:bg-amber-100'
                 }`}
               >
@@ -2860,11 +2860,11 @@ export default function CustomerMenu() {
                           <button
                             type="button"
                             onClick={() => openCustomizeModal(item.id)}
-                            className="line-clamp-1 text-left text-sm font-semibold text-[#3d1f00]"
+                            className="line-clamp-1 text-left text-sm font-semibold text-[#2b1d14]"
                           >
                             {item.name}
                           </button>
-                          <span className="shrink-0 text-sm font-bold text-[#78350f]">{formatVnd(item.price)}</span>
+                          <span className="shrink-0 text-sm font-bold text-[#5f4223]">{formatVnd(item.price)}</span>
                         </div>
                         <p className="mt-0.5 line-clamp-2 text-[13px] text-slate-500">{item.description || 'Đang cập nhật mô tả món'}</p>
                         {item.available === false && <p className="mt-1 text-[11px] font-semibold text-slate-500">⚫ Tạm hết món</p>}
@@ -2873,7 +2873,7 @@ export default function CustomerMenu() {
                             type="button"
                             onClick={() => decrease(item.id)}
                             disabled={selectedCount === 0}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-amber-200 bg-white text-sm font-semibold text-[#78350f] disabled:pointer-events-none disabled:opacity-30"
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-amber-200 bg-white text-sm font-semibold text-[#5f4223] disabled:pointer-events-none disabled:opacity-30"
                           >
                             <MinusIcon className="h-3.5 w-3.5" />
                           </button>
@@ -2881,7 +2881,7 @@ export default function CustomerMenu() {
                           <button
                             type="button"
                             onClick={() => handleQuickAdd(item)}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-[#78350f] bg-[#78350f] text-sm font-semibold text-white disabled:opacity-50"
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-[#5f4223] bg-[#5f4223] text-sm font-semibold text-white disabled:opacity-50"
                             disabled={!item.available}
                           >
                             +
@@ -3072,7 +3072,7 @@ export default function CustomerMenu() {
               {cartLines.length === 0 && (
                 <div className="rounded-xl border-[1.5px] border-dashed border-amber-500 bg-[#fffbf0] px-3 py-6 text-center">
                   <p className="text-2xl">🛒</p>
-                  <p className="mt-2 font-semibold text-[#3d1f00]">Giỏ hàng của bạn đang trống</p>
+                  <p className="mt-2 font-semibold text-[#2b1d14]">Giỏ hàng của bạn đang trống</p>
                   <p className="mt-1 text-xs text-slate-500">Hãy chọn món bên trên để bắt đầu</p>
                   <button
                     type="button"
@@ -3560,7 +3560,7 @@ export default function CustomerMenu() {
               type="button"
               onClick={() => setCartDrawerOpen(true)}
               disabled={!cartHasItems}
-              className="inline-flex min-h-11 w-full items-center justify-between rounded-xl border border-[#78350f] bg-white px-4 text-sm font-semibold text-[#78350f] disabled:pointer-events-none disabled:opacity-40"
+              className="inline-flex min-h-11 w-full items-center justify-between rounded-xl border border-[#5f4223] bg-white px-4 text-sm font-semibold text-[#5f4223] disabled:pointer-events-none disabled:opacity-40"
             >
               <span>🛒 Xem giỏ hàng ({cartItemCount} món)</span>
               <span>→</span>
@@ -3569,7 +3569,7 @@ export default function CustomerMenu() {
               type="button"
               onClick={() => void submitOrder()}
               disabled={!cartHasItems || submitting || resolvingTable}
-              className="inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-gradient-to-r from-[#78350f] to-[#b45309] px-4 text-sm font-bold text-white disabled:pointer-events-none disabled:opacity-40"
+              className="inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-gradient-to-r from-[#5f4223] to-[#9c6f36] px-4 text-sm font-bold text-white disabled:pointer-events-none disabled:opacity-40"
             >
               {submitting
                 ? 'Đang gửi...'

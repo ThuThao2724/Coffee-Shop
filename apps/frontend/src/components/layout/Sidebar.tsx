@@ -66,19 +66,19 @@ export default function Sidebar({ collapsed, mobileOpen = false, onNavigate }: S
   return (
     <aside
       className={cn(
-        'fixed inset-y-0 left-0 z-30 flex w-[min(18rem,86vw)] flex-col border-r border-amber-100/80 bg-white/95 shadow-xl backdrop-blur transition-all duration-300 dark:border-slate-700 dark:bg-slate-900/95 lg:w-72',
+        'fixed inset-y-0 left-0 z-30 flex w-[min(18rem,86vw)] flex-col border-r border-black/20 bg-espresso-sidebar text-slate-200 shadow-[8px_0_30px_-18px_rgba(22,17,14,0.6)] transition-all duration-300 dark:bg-slate-950 lg:w-72',
         collapsed && 'lg:w-16',
         mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
       )}
     >
       {/* Logo */}
-      <div className="flex h-16 items-center justify-center border-b border-amber-100/80 px-4 dark:border-slate-700">
+      <div className="flex h-16 items-center justify-center border-b border-white/10 px-4">
         {collapsed ? (
           <span className="text-2xl">☕</span>
         ) : (
           <div className="text-center">
-            <h1 className="text-xl font-bold text-primary-600">{t('appName')}</h1>
-            <p className="text-xs uppercase tracking-[0.2em] text-amber-700/80 dark:text-amber-300/80">Trung tâm vận hành</p>
+            <h1 className="text-[22px] font-semibold text-amber-200">{t('appName')}</h1>
+            <p className="text-[10px] font-medium uppercase tracking-[0.3em] text-amber-300/60">Trung tâm vận hành</p>
           </div>
         )}
       </div>
@@ -95,8 +95,8 @@ export default function Sidebar({ collapsed, mobileOpen = false, onNavigate }: S
                   cn(
                     'flex min-h-11 items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-colors',
                     isActive
-                      ? 'bg-amber-100 text-amber-800 shadow-sm dark:bg-amber-500/15 dark:text-amber-200'
-                      : 'text-slate-600 hover:bg-amber-50 dark:text-slate-300 dark:hover:bg-slate-800',
+                      ? 'bg-amber-300/15 text-amber-200 ring-1 ring-inset ring-amber-300/25'
+                      : 'text-slate-300 hover:bg-white/5 hover:text-white',
                     collapsed && 'justify-center px-2',
                   )
                 }
@@ -111,12 +111,12 @@ export default function Sidebar({ collapsed, mobileOpen = false, onNavigate }: S
 
       {/* Settings */}
       {canViewSettings && (
-        <div className="border-t border-amber-100/80 p-2 dark:border-slate-700">
+        <div className="border-t border-white/10 p-2">
           <NavLink
             to="/settings"
             onClick={onNavigate}
             className={cn(
-              'flex min-h-11 items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium text-slate-600 transition-colors hover:bg-amber-50 dark:text-slate-300 dark:hover:bg-slate-800',
+              'flex min-h-11 items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium text-slate-300 transition-colors hover:bg-white/5 hover:text-white',
               collapsed && 'justify-center px-2',
             )}
           >

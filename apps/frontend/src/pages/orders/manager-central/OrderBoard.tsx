@@ -62,41 +62,50 @@ export default function OrderBoard({
           <button
             key={column.key}
             type="button"
-            className={`min-h-12 rounded-xl border px-2 py-2 text-xs font-semibold ${
-              mobileColumn === column.key ? 'border-[#33210d] bg-[#fedcbe] text-[#291806]' : 'border-[#d2c4ba] bg-white text-[#4e453d]'
+            className={`inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl px-2 text-xs font-semibold ring-1 ring-inset transition ${
+              mobileColumn === column.key
+                ? 'bg-amber-500 text-white ring-amber-500'
+                : 'bg-white/90 text-slate-600 ring-amber-100 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700'
             }`}
             onClick={() => setMobileColumn(column.key)}
           >
-            {column.icon} {column.orders.length}
+            {column.title}
+            <span className="tabular-nums opacity-80">{column.orders.length}</span>
           </button>
         ))}
       </div>
 
       {loading && <RoutePageSkeleton kind="table" />}
       {!loading && !hasOrders && (
-        <Card className="rounded-2xl border border-[#d2c4ba] bg-white">
-          <p className="text-sm text-[#4e453d]">Không có đơn phù hợp với bộ lọc hiện tại.</p>
+        <Card>
+          <p className="text-sm text-slate-500 dark:text-slate-400">Không có đơn phù hợp với bộ lọc hiện tại.</p>
         </Card>
       )}
 
       {!loading && hasOrders && (
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
           {columns.map((column) => {
             const hiddenOnMobile = mobileColumn !== column.key ? 'hidden md:flex' : 'flex'
             const visibleLimit = visibleOrdersByColumn[column.key] ?? DEFAULT_VISIBLE_ORDERS
             const visibleOrders = column.orders.slice(0, visibleLimit)
             const remainingOrders = Math.max(column.orders.length - visibleOrders.length, 0)
             return (
-              <div key={column.key} className={`${hiddenOnMobile} min-h-[520px] flex-col rounded-2xl border border-[#d2c4ba] bg-[#fff8f5] p-3`}>
-                <div className={`mb-3 flex items-center justify-between rounded-xl border px-3 py-2 ${column.accent}`}>
-                  <p className="text-lg font-semibold uppercase tracking-wide text-[#291806]">
-                    {column.icon} {column.title}
+              <div
+                key={column.key}
+                className={`${hiddenOnMobile} glass-panel min-h-[520px] flex-col rounded-2xl p-3 ring-1 ring-amber-100/80 dark:ring-slate-700 sm:p-4`}
+              >
+                <div className="mb-3 flex items-center justify-between border-b border-amber-100 pb-3 dark:border-slate-700">
+                  <p className="inline-flex items-center gap-2 text-base font-semibold text-slate-800 dark:text-white">
+                    <span className={`h-2.5 w-2.5 rounded-full ${column.accent}`} aria-hidden="true" />
+                    {column.title}
                   </p>
-                  <span className="rounded-full bg-white px-2 py-0.5 text-sm font-semibold text-[#33210d]">{column.orders.length}</span>
+                  <span className="min-w-7 rounded-full bg-amber-100 px-2 py-0.5 text-center text-xs font-semibold tabular-nums text-amber-800 dark:bg-amber-500/20 dark:text-amber-200">
+                    {column.orders.length}
+                  </span>
                 </div>
-                <div className="flex-1 space-y-2 overflow-y-auto pr-1">
+                <div className="flex-1 space-y-3 overflow-y-auto pr-1">
                   {column.orders.length === 0 && (
-                    <div className="rounded-xl border border-dashed border-[#d2c4ba] bg-white/80 p-3 text-center text-xs text-[#4e453d]">
+                    <div className="rounded-xl border border-dashed border-amber-200 p-6 text-center text-sm text-slate-400 dark:border-slate-700">
                       Chưa có đơn trong cột này.
                     </div>
                   )}
@@ -127,7 +136,7 @@ export default function OrderBoard({
                   {column.orders.length > DEFAULT_VISIBLE_ORDERS && (
                     <button
                       type="button"
-                      className="w-full rounded-xl border border-[#d2c4ba] bg-white px-3 py-2 text-sm font-medium text-[#33210d] hover:bg-[#fef1e6]"
+                      className="w-full rounded-xl px-3 py-2 text-sm font-medium text-amber-700 ring-1 ring-inset ring-amber-200 transition hover:bg-amber-50 dark:text-amber-300 dark:ring-slate-700 dark:hover:bg-slate-800"
                       onClick={() =>
                         setVisibleOrdersByColumn((prev) => ({
                           ...prev,

@@ -33,12 +33,12 @@ export default function Login() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-amber-50 via-cyan-50 to-blue-50 px-4 py-6">
-      <div className="w-full max-w-md space-y-7 rounded-2xl border border-amber-100 bg-white/92 p-6 shadow-[0_24px_42px_-26px_rgba(2,132,199,0.7)] backdrop-blur-lg sm:p-8">
+    <div className="flex min-h-screen items-center justify-center bg-espresso-sidebar bg-[radial-gradient(90%_60%_at_50%_0%,rgba(203,160,97,0.22),transparent_60%)] px-4 py-6">
+      <div className="w-full max-w-md space-y-7 rounded-3xl border border-amber-200/20 bg-[#faf6f0] p-6 shadow-[0_30px_80px_-30px_rgba(0,0,0,0.75)] sm:p-9">
         <div className="text-center">
-          <span className="text-5xl">☕</span>
-          <h2 className="mt-4 text-3xl font-bold tracking-tight text-slate-900">{tv('Coffee Shop POS', 'Coffee Shop POS')}</h2>
-          <p className="mt-2 text-sm text-slate-500">{tv('Đăng nhập để quản lý cửa hàng', 'Sign in to manage your shop')}</p>
+          <span className="inline-flex h-16 w-16 items-center justify-center rounded-full bg-espresso-sidebar text-3xl shadow-inner ring-4 ring-amber-200/40">☕</span>
+          <h2 className="mt-5 text-3xl font-semibold text-slate-900">{tv('Coffee Shop POS', 'Coffee Shop POS')}</h2>
+          <p className="mt-2 text-xs font-medium uppercase tracking-[0.3em] text-amber-700">{tv('Đăng nhập để quản lý cửa hàng', 'Sign in to manage your shop')}</p>
         </div>
         <form className="mt-8 space-y-5" onSubmit={handleSubmit}>
           <Input

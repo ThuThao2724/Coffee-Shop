@@ -65,7 +65,7 @@ const initialForm: PromotionFormState = {
   isActive: true,
 }
 const fieldClass =
-  'min-h-11 w-full rounded-xl border border-amber-100/80 bg-white/95 px-3 py-2 text-sm text-slate-800 focus:border-amber-400 focus:ring-2 focus:ring-amber-300/60 dark:border-slate-600 dark:bg-slate-800 dark:text-white dark:focus:border-amber-400 dark:focus:ring-amber-500/30'
+  'min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:border-amber-400 dark:focus:ring-amber-400/20'
 
 export default function Promotions() {
   const selectedBranchId = useBranchScopeStore((state) => state.selectedBranchId)
@@ -221,9 +221,9 @@ export default function Promotions() {
 
   return (
     <div className="space-y-5 sm:space-y-6">
-      <h1 className="text-xl font-bold text-slate-900 dark:text-white sm:text-2xl">Quản lý khuyến mãi (M-17/M-18)</h1>
+      <h1 className="text-xl font-bold text-slate-900 dark:text-white sm:text-2xl">Quản lý khuyến mãi</h1>
 
-      <Card title={editingId ? 'Cập nhật khuyến mãi' : 'M-17 Tạo mã giảm giá'}>
+      <Card title={editingId ? 'Cập nhật khuyến mãi' : 'Tạo mã giảm giá'}>
         <form onSubmit={onSubmit} className="grid grid-cols-1 gap-3 md:grid-cols-4">
           <input
             className={fieldClass}
@@ -345,7 +345,7 @@ export default function Promotions() {
         )}
       </Card>
 
-      <Card title="M-18 Quản lý chương trình">
+      <Card title="Quản lý chương trình">
         <div className="mb-3 grid grid-cols-1 gap-2 md:grid-cols-4">
           <input
             className={fieldClass}

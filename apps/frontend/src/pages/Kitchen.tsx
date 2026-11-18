@@ -14,6 +14,18 @@ import { maDonHangNgan, trangThaiDonHang } from '@/utils/display'
 import { resolveWebsocketBaseUrl } from '@/utils/runtime-endpoints'
 import { io, type Socket } from 'socket.io-client'
 
+// Labels for the option values seeded in order-service (prisma/seed.ts).
+const OPTION_VALUE_LABELS: Record<string, string> = {
+  less_ice: 'Ít đá',
+  normal_ice: 'Đá vừa',
+  no_ice: 'Không đá',
+  less_sugar: 'Ít đường',
+  normal_sugar: 'Đường vừa',
+  no_sugar: 'Không đường',
+  serve_now: 'Dùng ngay',
+  warm_up: 'Làm nóng',
+}
+
 interface TableApi {
   id: string
   number: number
@@ -437,18 +449,39 @@ export default function Kitchen() {
 
   const itemLabel = (menuItemId: string) => menuItems.find((m) => m.id === menuItemId)?.name || menuItemId
 
+  // Item options are stored as {"selections": {"size": "S", "ice": "less_ice", ...}, "extraAmount": 0}
+  // (older POS lines use {"size": {"name"}, "toppings": [{"name"}], "note"}). Show them as
+  // "Size S · Ít đá · Ít đường" instead of "selections: [object Object]".
   const formatOptions = (options?: string | null) => {
     if (!options) return ''
+    let parsed: unknown
     try {
-      const parsed = JSON.parse(options) as Record<string, unknown>
-      if (!parsed || typeof parsed !== 'object') return options
-      const entries = Object.entries(parsed)
-        .filter(([key]) => key !== 'extraAmount')
-        .map(([key, value]) => `${key}: ${String(value)}`)
-      return entries.join(' | ')
+      parsed = JSON.parse(options)
     } catch {
       return options
     }
+    if (!parsed || typeof parsed !== 'object') return String(options)
+    const record = parsed as Record<string, unknown>
+    const source = record.selections && typeof record.selections === 'object'
+      ? (record.selections as Record<string, unknown>)
+      : record
+    const parts: string[] = []
+    let note = ''
+    for (const [key, raw] of Object.entries(source)) {
+      if (key === 'extraAmount' || raw === null || raw === undefined || raw === '') continue
+      if (key === 'note') {
+        note = String(raw).trim()
+        continue
+      }
+      const values = (Array.isArray(raw) ? raw : [raw])
+        .map((entry) => (entry && typeof entry === 'object' ? String((entry as { name?: unknown }).name ?? '') : String(entry)))
+        .map((value) => OPTION_VALUE_LABELS[value] ?? value)
+        .filter(Boolean)
+      if (!values.length) continue
+      parts.push(key === 'size' ? `Size ${values.join(', ')}` : key === 'toppings' ? `Topping: ${values.join(', ')}` : values.join(', '))
+    }
+    if (note) parts.push(`Ghi chú: ${note}`)
+    return parts.join(' · ')
   }
 
   const totalPendingItems = useMemo(
@@ -504,7 +537,7 @@ export default function Kitchen() {
       {loading && <RoutePageSkeleton kind="dashboard" />}
       {!loading && (
         <p className="rounded-xl border border-amber-100 bg-white/85 px-3 py-2 text-sm text-slate-600">
-          {tv('S-12:', 'S-12:')} {orders.length} {tv('đơn đang chờ/đang làm', 'orders in queue/in progress')} · {totalPendingItems} {tv('món chưa hoàn thành', 'items not completed')}
+          {orders.length} {tv('đơn đang chờ/đang làm', 'orders in queue/in progress')} · {totalPendingItems} {tv('món chưa hoàn thành', 'items not completed')}
         </p>
       )}
 
@@ -546,10 +579,10 @@ export default function Kitchen() {
                           </span>
                           <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">{itemStatusLabel(item.status)}</span>
                         </div>
-                        {(item.note || item.options) && (
+                        {(item.note || formatOptions(item.options)) && (
                           <div className="mt-1 text-xs text-slate-600 dark:text-slate-300">
                             {item.note && <p>Ghi chú: {item.note}</p>}
-                            {item.options && <p>Tùy chọn: {formatOptions(item.options)}</p>}
+                            {formatOptions(item.options) && <p>Tùy chọn: {formatOptions(item.options)}</p>}
                           </div>
                         )}
                         <div className="mt-2 flex flex-wrap gap-2">

@@ -23,6 +23,7 @@ import { useI18n } from '@/utils/i18n'
 import { phuongThucThanhToan, trangThaiThanhToan, vaiTroNhanVien } from '@/utils/display'
 import { useBranchScopeStore } from '@/stores/branchScopeStore'
 import { useAuthStore } from '@/stores/authStore'
+import { useBranchName } from '@/hooks/useBranchName'
 
 type TimeGroup = 'day' | 'week' | 'month' | 'year'
 type ExportType = 'revenue' | 'top-items' | 'inventory' | 'staff-performance' | 'dashboard'
@@ -252,7 +253,7 @@ function formatHourLabel(value: string): string {
 }
 
 const selectClass =
-  'min-h-11 w-full rounded-xl border border-amber-100/80 bg-white/95 px-3 py-2 text-sm text-slate-800 focus:border-amber-400 focus:ring-2 focus:ring-amber-300/60 dark:border-slate-600 dark:bg-slate-800 dark:text-white dark:focus:border-amber-400 dark:focus:ring-amber-500/30'
+  'min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:border-amber-400 dark:focus:ring-amber-400/20'
 
 export default function Reports() {
   const { tv } = useI18n()
@@ -295,6 +296,8 @@ export default function Reports() {
   const [exportType, setExportType] = useState<ExportType>('revenue')
   const [exportFormat, setExportFormat] = useState<ExportFormat>('excel')
   const effectiveAiBranchId = selectedBranchId || currentUserBranchId || 'branch-e2e'
+  const selectedBranchName = useBranchName(selectedBranchId)
+  const aiBranchName = useBranchName(effectiveAiBranchId)
   const currentUserRole = String(useAuthStore((state) => state.user?.role || '')).toUpperCase()
 
   const requestAiWithRetry = async (path: string, params: Record<string, any>) => {
@@ -643,7 +646,7 @@ export default function Reports() {
       toast.success('Đã rebuild forecast, đang tải lại AI insights')
       await loadReports()
     } catch (error: any) {
-      toast.error(error?.response?.data?.message || 'Rebuild forecast thất bại')
+      toast.error(error?.response?.data?.message || 'Dự báo lại thất bại')
     } finally {
       setRebuildingForecast(false)
     }
@@ -698,27 +701,54 @@ export default function Reports() {
 
   return (
     <div className="space-y-5 sm:space-y-6">
-      <div className="flex flex-wrap items-end gap-3 rounded-2xl border border-amber-100 bg-white/85 p-3 backdrop-blur sm:p-4">
-        <h1 className="mr-auto text-xl font-bold text-slate-900 dark:text-white sm:text-2xl">Báo cáo và phân tích</h1>
-        <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-full sm:w-44" />
-        <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-full sm:w-44" />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900 dark:text-white sm:text-2xl">Báo cáo và phân tích</h1>
+          <p className="mt-0.5 text-sm text-amber-700 dark:text-amber-300">
+            📍 {selectedBranchId ? selectedBranchName || 'Đang tải chi nhánh...' : 'Toàn hệ thống'}
+          </p>
+        </div>
+        <span
+          className={`inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-sm font-medium ring-1 ring-inset ${
+            realtimeLagMs > 5000
+              ? 'bg-rose-50 text-rose-700 ring-rose-200'
+              : 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+          }`}
+          title={`Độ trễ cập nhật: ${Math.round(realtimeLagMs)} ms`}
+        >
+          <span className={`h-2 w-2 rounded-full ${realtimeLagMs > 5000 ? 'bg-rose-500' : 'bg-emerald-500'}`} aria-hidden="true" />
+          {realtimeLagMs > 5000 ? 'Cập nhật chậm' : 'Realtime ON'}
+        </span>
+      </div>
+
+      <Card className="!p-3 sm:!p-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:flex lg:items-end">
+        <div className="lg:w-44">
+          <label className="mb-1 block text-xs font-medium text-slate-500">Từ ngày</label>
+          <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        </div>
+        <div className="lg:w-44">
+          <label className="mb-1 block text-xs font-medium text-slate-500">Đến ngày</label>
+          <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        </div>
+        <div className="lg:w-44">
+        <label className="mb-1 block text-xs font-medium text-slate-500">Nhóm theo</label>
         <select
           value={groupBy}
           onChange={(e) => setGroupBy(e.target.value as TimeGroup)}
-          className={`${selectClass} sm:w-44`}
+          className={selectClass}
         >
           <option value="day">{tv('Theo ngày', 'By day')}</option>
           <option value="week">{tv('Theo tuần', 'By week')}</option>
           <option value="month">{tv('Theo tháng', 'By month')}</option>
           <option value="year">{tv('Theo năm', 'By year')}</option>
         </select>
+        </div>
         <Button variant="secondary" className="w-full sm:w-auto" onClick={() => void loadReports()} loading={loading}>
           {tv('Làm mới', 'Refresh')}
         </Button>
-        <p className={`text-xs ${realtimeLagMs > 5000 ? 'text-rose-700' : 'text-emerald-700'}`}>
-          Realtime lag: {Math.round(realtimeLagMs)} ms
-        </p>
-      </div>
+        </div>
+      </Card>
 
       {noBusinessDataForSelectedBranch && (
         <Card className="border border-amber-200 bg-amber-50/80">
@@ -726,7 +756,7 @@ export default function Reports() {
             Không có dữ liệu giao dịch cho chi nhánh đang chọn trong khoảng thời gian này.
           </p>
           <p className="mt-1 text-xs text-amber-700">
-            BranchId hiện tại: {selectedBranchId}
+            Chi nhánh đang xem: {selectedBranchName || selectedBranchId}
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <Button size="sm" variant="secondary" onClick={() => setSelectedBranchId('')}>
@@ -762,24 +792,24 @@ export default function Reports() {
         </Card>
       </div>}
 
-      <Card title="AI Revenue Intelligence" subtitle={aiInsight.available ? 'Phân tích và dự báo doanh thu bằng AI' : 'Fallback rule-based'}>
+      <Card title="Phân tích doanh thu bằng AI" subtitle={aiInsight.available ? 'Dự báo doanh thu và cảnh báo bất thường' : 'AI tạm ngưng, đang dùng số liệu thống kê'}>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-slate-500">
-            Branch AI: <span className="font-medium text-slate-700">{effectiveAiBranchId}</span>
-            {aiInsight.forecastSource ? ` · Forecast source: ${aiInsight.forecastSource}` : ''}
+            Chi nhánh: <span className="font-medium text-slate-700 dark:text-slate-200">{aiBranchName || 'Đang tải...'}</span>
+            {aiInsight.forecastSource ? ` · Mô hình dự báo: ${aiInsight.forecastSource}` : ''}
           </p>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="secondary" onClick={() => void handleRebuildForecast()} loading={rebuildingForecast}>
-              Rebuild forecast
+              Dự báo lại
             </Button>
             <Button size="sm" variant="secondary" onClick={() => void handleTestAnomaly()} loading={testingAnomaly}>
-              Test anomaly
+              Kiểm tra cảnh báo
             </Button>
           </div>
         </div>
         {!aiInsight.available && (
           <p className="text-sm text-amber-700">
-            AI tạm thời không khả dụng. Đang fallback về báo cáo truyền thống. {aiInsight.fallbackReason ? `(${aiInsight.fallbackReason})` : ''}
+            AI tạm thời không khả dụng. Đang dùng số liệu thống kê thông thường. {aiInsight.fallbackReason ? `(${aiInsight.fallbackReason})` : ''}
           </p>
         )}
         {aiInsight.available && (
@@ -977,7 +1007,7 @@ export default function Reports() {
                                 type="monotone"
                                 dataKey={endpoint}
                                 name={describeEndpoint(endpoint)}
-                                stroke={['#0284c7', '#f59e0b', '#ef4444', '#16a34a'][idx % 4]}
+                                stroke={['#0284c7', '#b8894a', '#ef4444', '#16a34a'][idx % 4]}
                                 strokeWidth={2}
                                 dot={false}
                               />
@@ -1097,7 +1127,7 @@ export default function Reports() {
       )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Card title="Doanh thu theo thời gian (M-19)" subtitle="Ngày / tuần / tháng / năm">
+        <Card title="Doanh thu theo thời gian" subtitle="Ngày / tuần / tháng / năm">
           <div className="h-64 sm:h-72">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={revenueChartData}>
@@ -1112,7 +1142,7 @@ export default function Reports() {
           </div>
         </Card>
 
-        <Card title="Đơn hàng theo giờ (M-23)" subtitle="24 giờ gần nhất">
+        <Card title="Đơn hàng theo giờ" subtitle="24 giờ gần nhất">
           <div className="h-64 sm:h-72">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={orderHourlyChartData}>
@@ -1161,7 +1191,7 @@ export default function Reports() {
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Card title="Top 10 món bán chạy (M-20)">
+        <Card title="Top 10 món bán chạy">
           <div className="space-y-2">
             {topItems.length === 0 && <p className="text-sm text-gray-500">Chưa có dữ liệu</p>}
             {topItems.map((item, index) => (
@@ -1178,7 +1208,7 @@ export default function Reports() {
           </div>
         </Card>
 
-        <Card title="Hiệu suất nhân viên (M-22)">
+        <Card title="Hiệu suất nhân viên">
           <div className="space-y-2">
             {staffItems.length === 0 && <p className="text-sm text-gray-500">Chưa có dữ liệu</p>}
             {staffItems.map((item) => (
@@ -1194,7 +1224,7 @@ export default function Reports() {
         </Card>
       </div>
 
-      <Card title="Tồn kho hiện tại (M-21)" subtitle={`Cập nhật: ${dashboard?.updatedAt ? new Date(dashboard.updatedAt).toLocaleString('vi-VN') : '-'}`}>
+      <Card title="Tồn kho hiện tại" subtitle={`Cập nhật: ${dashboard?.updatedAt ? new Date(dashboard.updatedAt).toLocaleString('vi-VN') : '-'}`}>
         <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="rounded-xl border border-amber-100 bg-white/90 p-3 text-sm dark:border-slate-700 dark:bg-slate-900/60">
             <p className="text-slate-500">Tổng nguyên liệu</p>
@@ -1284,7 +1314,7 @@ export default function Reports() {
                     <YAxis tick={{ fontSize: 12 }} />
                     <Tooltip />
                     <Legend />
-                    <Bar dataKey="count" name="Số nguyên liệu" fill="#f59e0b" />
+                    <Bar dataKey="count" name="Số nguyên liệu" fill="#b8894a" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1339,7 +1369,7 @@ export default function Reports() {
         </div>
       </Card>
 
-      <Card title="Xuất báo cáo (M-19/M-21/M-22)">
+      <Card title="Xuất báo cáo">
         <div className="flex flex-wrap items-end gap-3">
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-600">Loại báo cáo</label>

@@ -8,6 +8,7 @@ import { TableStatus } from '@/types'
 import { RoutePageSkeleton } from '@/components/ui/PageSkeleton'
 import { maDonHangNgan, trangThaiBan, trangThaiDonHang } from '@/utils/display'
 import { useBranchScopeStore } from '@/stores/branchScopeStore'
+import { useBranchName } from '@/hooks/useBranchName'
 import { clearPosMenuCache, readPosMenuCache, writePosMenuCache } from '@/utils/posMenuCache'
 import { disconnectSocket, getSocket } from '@/utils/socket'
 import { showRealtimeNotification } from '@/utils/notifications'
@@ -57,12 +58,16 @@ interface StaffNotificationPayload {
 
 const statuses: TableStatus[] = ['AVAILABLE', 'OCCUPIED', 'RESERVED', 'CLEANING', 'MAINTENANCE']
 const activeStatuses: OrderStatus[] = ['PENDING', 'CONFIRMED', 'PREPARING', 'READY']
+const stepButtonClass =
+  'inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-base text-slate-700 shadow-sm transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200'
+
 const fieldClass =
-  'min-h-11 w-full rounded-xl border border-amber-100/80 bg-white/95 px-3 py-2 text-sm text-slate-800 focus:border-amber-400 focus:ring-2 focus:ring-amber-300/60 dark:border-slate-600 dark:bg-slate-800 dark:text-white dark:focus:border-amber-400 dark:focus:ring-amber-500/30'
+  'min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:border-amber-400 dark:focus:ring-amber-400/20'
 
 export default function Tables() {
   const navigate = useNavigate()
   const selectedBranchId = useBranchScopeStore((state) => state.selectedBranchId)
+  const selectedBranchName = useBranchName(selectedBranchId)
   const [tables, setTables] = useState<TableApi[]>([])
   const [orders, setOrders] = useState<OrderApi[]>([])
   const [menuItems, setMenuItems] = useState<MenuItemApi[]>([])
@@ -242,13 +247,18 @@ export default function Tables() {
       toast.error('Vui lòng nhập số bàn và sức chứa')
       return
     }
+    if (!selectedBranchId) {
+      // A table without a branch cannot be scanned into any branch menu.
+      toast.error('Chọn chi nhánh ở thanh trên cùng trước khi tạo bàn')
+      return
+    }
     setCreating(true)
     try {
       await api.post('/tables', {
         number: Number(form.number),
         capacity: Number(form.capacity),
         area: form.area,
-        branchId: form.branchId || selectedBranchId || undefined,
+        branchId: selectedBranchId,
       })
       setForm({
         number: '',
@@ -652,7 +662,7 @@ export default function Tables() {
             <option value="MAINTENANCE">Bảo trì</option>
           </select>
           <Button variant="secondary" onClick={() => { clearPosMenuCache(selectedBranchId || undefined); void loadTables() }}>
-            Làm mới menu cache
+            Làm mới
           </Button>
         </div>
       </Card>
@@ -680,21 +690,24 @@ export default function Tables() {
             value={form.area}
             onChange={(e) => setForm((prev) => ({ ...prev, area: e.target.value }))}
           />
-          <input
-            type="text"
-            placeholder="Mã chi nhánh (tùy chọn)"
-            className={fieldClass}
-            value={form.branchId}
-            onChange={(e) => setForm((prev) => ({ ...prev, branchId: e.target.value }))}
-          />
-          <Button type="submit" loading={creating}>
+          <div
+            className={`flex min-h-10 items-center rounded-lg px-3 text-sm ring-1 ring-inset ${
+              selectedBranchId
+                ? 'bg-slate-50 text-slate-700 ring-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700'
+                : 'bg-amber-50 text-amber-800 ring-amber-200'
+            }`}
+            title="Bàn mới thuộc chi nhánh đang chọn ở thanh trên cùng"
+          >
+            {selectedBranchId ? `📍 ${selectedBranchName || 'Đang tải chi nhánh...'}` : 'Chọn chi nhánh ở thanh trên cùng'}
+          </div>
+          <Button type="submit" loading={creating} disabled={!selectedBranchId}>
             Tạo bàn + QR
           </Button>
         </form>
       </Card>
 
       {editingTableId && (
-        <Card title="M-14 Sửa bàn">
+        <Card title="Sửa bàn">
         <form onSubmit={submitEditTable} className="grid grid-cols-1 gap-3 md:grid-cols-6">
           <input
             type="number"
@@ -747,7 +760,7 @@ export default function Tables() {
         </Card>
       )}
 
-      <Card title="Chuyển / Ghép Bàn" subtitle="S-06">
+      <Card title="Chuyển / ghép bàn">
         <form onSubmit={executeTableAction} className="grid grid-cols-1 gap-3 md:grid-cols-4">
           <select
             className={fieldClass}
@@ -787,7 +800,7 @@ export default function Tables() {
         </form>
       </Card>
 
-      <Card title="Tạo Đơn Hộ Khách" subtitle="S-07">
+      <Card title="Tạo đơn hộ khách">
         <form onSubmit={createWalkInOrder} className="space-y-3">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <select
@@ -822,11 +835,11 @@ export default function Tables() {
                     <p className="text-xs text-slate-500">{item.price.toLocaleString()}đ</p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button type="button" className="inline-flex h-9 min-w-9 items-center justify-center rounded-lg border border-amber-200 px-2" onClick={() => decreaseItem(item.id)}>
-                      -
+                    <button type="button" className={stepButtonClass} onClick={() => decreaseItem(item.id)} aria-label={`Bớt ${item.name}`}>
+                      −
                     </button>
-                    <span>{orderCart[item.id] || 0}</span>
-                    <button type="button" className="inline-flex h-9 min-w-9 items-center justify-center rounded-lg border border-amber-200 px-2" onClick={() => increaseItem(item.id)}>
+                    <span className="w-5 text-center tabular-nums">{orderCart[item.id] || 0}</span>
+                    <button type="button" className={stepButtonClass} onClick={() => increaseItem(item.id)} aria-label={`Thêm ${item.name}`}>
                       +
                     </button>
                   </div>
@@ -838,7 +851,7 @@ export default function Tables() {
 
       {loading && <RoutePageSkeleton kind="table" />}
 
-      <Card title="M-15 / M-16 QR">
+      <Card title="Mã QR bàn">
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <label className="inline-flex items-center gap-2">
             <input
@@ -867,7 +880,6 @@ export default function Tables() {
                 <p className="text-sm text-slate-500">
                   {table.area || 'Chưa phân khu'} · {table.capacity} chỗ
                 </p>
-                {table.branchId && <p className="text-xs text-slate-400">Chi nhánh: {table.branchId}</p>}
               </div>
               <div className="flex flex-col items-end gap-2">
                 <label className="inline-flex items-center gap-2 text-xs text-slate-500">

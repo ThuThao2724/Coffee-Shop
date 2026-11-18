@@ -13,6 +13,7 @@ import { readPosOfflineQueue, writePosOfflineQueue } from '@/utils/posOfflineQue
 import { disconnectSocket, getSocket } from '@/utils/socket'
 import { showRealtimeNotification } from '@/utils/notifications'
 import { useAuthStore } from '@/stores/authStore'
+import Card from '@/components/ui/Card'
 import ManagerLayout from '@/pages/orders/manager-central/ManagerLayout'
 import OfflineQueuePanel from '@/pages/orders/manager-central/OfflineQueuePanel'
 import OrderBoard from '@/pages/orders/manager-central/OrderBoard'
@@ -155,8 +156,9 @@ interface OfflineOrderQueueItem {
 const paymentMethods: PaymentMethod[] = ['CASH', 'SEPAY']
 const orderStatuses: Array<OrderApi['status']> = ['PENDING', 'CONFIRMED', 'PREPARING', 'READY', 'COMPLETED', 'CANCELLED']
 type PosBoardTone = 'neutral' | 'warning' | 'danger'
+// Same field style as the other staff pages.
 const selectClass =
-  'min-h-12 w-full rounded-xl border border-[#d2c4ba] bg-white px-3 py-2 text-sm text-[#33210d] focus:border-[#725a42] focus:ring-2 focus:ring-[#e1c1a4]/60'
+  'min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:border-amber-400 dark:focus:ring-amber-400/20'
 const formatDateTimeFull = (value?: string | null) => {
   if (!value) return '-'
   const date = new Date(value)
@@ -252,7 +254,6 @@ export default function Orders() {
   const { tv } = useI18n()
   const selectedBranchId = useBranchScopeStore((state) => state.selectedBranchId)
   const user = useAuthStore((state) => state.user)
-  const logout = useAuthStore((state) => state.logout)
   const [tables, setTables] = useState<TableApi[]>([])
   const [menuItems, setMenuItems] = useState<MenuItemApi[]>([])
   const [orders, setOrders] = useState<OrderApi[]>([])
@@ -1311,21 +1312,21 @@ export default function Orders() {
         title: 'Chờ xác nhận',
         icon: '📋',
         orders: posBoardOrders.pending,
-        accent: 'border-amber-300 bg-amber-50/70',
+        accent: 'bg-amber-500',
       },
       {
         key: 'WORKING',
         title: 'Đang làm',
         icon: '🔧',
         orders: posBoardOrders.working,
-        accent: 'border-sky-300 bg-sky-50/70',
+        accent: 'bg-sky-500',
       },
       {
         key: 'COMPLETED',
         title: 'Hoàn thành',
         icon: '✅',
         orders: posBoardOrders.completed,
-        accent: 'border-emerald-300 bg-emerald-50/70',
+        accent: 'bg-emerald-500',
       },
     ],
     [posBoardOrders.completed, posBoardOrders.pending, posBoardOrders.working],
@@ -1366,7 +1367,6 @@ export default function Orders() {
           void loadData()
           void loadPaymentHistory()
         }}
-        onLogout={logout}
         offlineQueuePanel={
           <OfflineQueuePanel
             queue={offlineQueue}
@@ -1383,8 +1383,8 @@ export default function Orders() {
           />
         }
         filterPanel={
-          <section className="rounded-2xl border border-[#d2c4ba] bg-[#fff8f5] p-4">
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6">
+          <Card className="!p-3 sm:!p-4">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-[repeat(4,minmax(0,1fr))_auto_auto]">
               <select
                 className={selectClass}
                 value={selectedStatus}
@@ -1407,21 +1407,21 @@ export default function Orders() {
               </select>
               <input type="date" className={selectClass} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
               <input type="date" className={selectClass} value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-              <Button variant="secondary" className="min-h-12 rounded-xl border border-[#d2c4ba] bg-white text-[#33210d]" onClick={resetFilters}>
+              <Button variant="ghost" className="whitespace-nowrap" onClick={resetFilters}>
                 Xóa lọc
               </Button>
               <Button
                 variant="secondary"
-                className="min-h-12 rounded-xl border border-[#d2c4ba] bg-white text-[#33210d]"
+                className="whitespace-nowrap"
                 onClick={() => {
                   clearPosMenuCache(selectedBranchId || undefined)
                   void loadData()
                 }}
               >
-                Làm mới menu cache
+                Làm mới menu
               </Button>
             </div>
-          </section>
+          </Card>
         }
         boardPanel={
           <OrderBoard
@@ -1741,7 +1741,7 @@ export default function Orders() {
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-3 sm:items-center sm:p-4">
           <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 dark:bg-slate-900">
             <p className="text-lg font-bold" title={editingOrder.id}>Sửa món đơn {maDonHangNgan(editingOrder.id)}</p>
-            <p className="mt-1 text-sm text-slate-500">S-09: Sửa số lượng, thêm/xóa món trong đơn</p>
+            <p className="mt-1 text-sm text-slate-500">Sửa số lượng, thêm/xóa món trong đơn</p>
 
             <div className="mt-3">
               <Button size="sm" variant="secondary" onClick={() => setShowAddItemPicker((prev) => !prev)}>

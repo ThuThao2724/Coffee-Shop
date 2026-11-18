@@ -99,7 +99,7 @@ export default function PaymentReturn() {
   }, [payload, tv])
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-100 px-4 py-10 text-center text-gray-900">
+    <div className="min-h-screen bg-gradient-to-br from-amber-50 to-amber-100 px-4 py-10 text-center text-gray-900">
       <div className="mx-auto max-w-lg rounded-3xl bg-white/90 p-8 shadow-xl ring-1 ring-amber-200">
         <div className="mb-4 text-sm font-semibold uppercase tracking-wide text-amber-600">
           {payload.provider || 'Payment'}

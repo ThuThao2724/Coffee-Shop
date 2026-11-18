@@ -3,6 +3,7 @@ import toast from 'react-hot-toast'
 import Card from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
+import { useBranchName } from '@/hooks/useBranchName'
 import api from '@/utils/api'
 import { loaiTuyChonMon, trangThaiHoatDong } from '@/utils/display'
 import { useBranchScopeStore } from '@/stores/branchScopeStore'
@@ -118,6 +119,7 @@ export default function Menu() {
   const [keyword, setKeyword] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('ALL')
   const [branchId, setBranchId] = useState(selectedBranchId)
+  const branchName = useBranchName(branchId)
 
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null)
   const [categoryForm, setCategoryForm] = useState({ name: '', description: '', sortOrder: '0', isActive: true })
@@ -457,18 +459,22 @@ export default function Menu() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Quản lý thực đơn (M-04/M-05/M-06)</h1>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900 dark:text-white sm:text-2xl">Quản lý thực đơn</h1>
+          <p className="mt-0.5 text-sm text-amber-700 dark:text-amber-300">
+            📍 {branchId ? branchName || 'Đang tải chi nhánh...' : 'Tất cả chi nhánh'}
+          </p>
+        </div>
         <div className="flex items-center gap-2">
-          <Input placeholder="Mã chi nhánh" value={branchId || 'Tất cả chi nhánh'} disabled />
-          <label className="inline-flex items-center gap-2 text-sm">
+          <label className="inline-flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
             <input type="checkbox" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} />
             Hiển thị cả mục đã ngừng hoạt động
           </label>
         </div>
       </div>
 
-      <Card title="M-04 Danh mục">
+      <Card title="Danh mục">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
           <Input placeholder="Tên danh mục" value={categoryForm.name} onChange={(e) => setCategoryForm((p) => ({ ...p, name: e.target.value }))} />
           <Input placeholder="Mô tả" value={categoryForm.description} onChange={(e) => setCategoryForm((p) => ({ ...p, description: e.target.value }))} />
@@ -541,7 +547,7 @@ export default function Menu() {
         </div>
       </Card>
 
-      <Card title="M-06 Tùy chọn toàn cục">
+      <Card title="Tùy chọn toàn cục">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
           <Input placeholder="Tên nhóm" value={groupForm.name} onChange={(e) => setGroupForm((p) => ({ ...p, name: e.target.value }))} />
           <label className="text-sm">
@@ -671,7 +677,7 @@ export default function Menu() {
         </div>
       </Card>
 
-      <Card title="M-05 Quản lý món">
+      <Card title="Quản lý món">
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <div className="space-y-3 lg:col-span-2">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">

@@ -92,7 +92,7 @@ const defaultReceiptRow = {
   note: '',
 }
 const selectClass =
-  'min-h-11 w-full rounded-xl border border-amber-100/80 bg-white/95 px-3 py-2 text-sm text-slate-800 focus:border-amber-400 focus:ring-2 focus:ring-amber-300/60 dark:border-slate-600 dark:bg-slate-800 dark:text-white dark:focus:border-amber-400 dark:focus:ring-amber-500/30'
+  'min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:border-amber-400 dark:focus:ring-amber-400/20'
 function toDateInputValue(date: Date) {
   return date.toISOString().slice(0, 10)
 }
@@ -514,22 +514,24 @@ export default function Inventory() {
 
   return (
     <div className="space-y-5 sm:space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-bold text-slate-900 dark:text-white sm:text-2xl">{tv('Quản lý kho (M-07..M-11)', 'Inventory management (M-07..M-11)')}</h1>
-        <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900 dark:text-white sm:text-2xl">{tv('Quản lý kho', 'Inventory management')}</h1>
+          <p className="mt-0.5 text-sm text-amber-700 dark:text-amber-300">
+            📍 {branchId ? getBranchDisplayName(branchId) : 'Tất cả chi nhánh'}
+          </p>
+        </div>
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           <span
-            className={`rounded-full px-3 py-1 text-xs font-medium ${
-              socketConnected ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'
+            className={`inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-sm font-medium ring-1 ring-inset ${
+              socketConnected
+                ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                : 'bg-slate-100 text-slate-600 ring-slate-200'
             }`}
           >
-            {socketConnected ? 'Realtime tồn kho: Đã kết nối' : 'Realtime tồn kho: Ngoại tuyến'}
+            <span className={`h-2 w-2 rounded-full ${socketConnected ? 'bg-emerald-500' : 'bg-slate-400'}`} aria-hidden="true" />
+            {socketConnected ? 'Realtime ON' : 'Ngoại tuyến'}
           </span>
-          <Input
-            placeholder="Chi nhánh"
-            value={branchId ? getBranchDisplayName(branchId) : 'Tất cả chi nhánh'}
-            disabled
-            className="w-full sm:w-40"
-          />
           <Button className="w-full sm:w-auto" onClick={syncFromMenu} loading={syncing}>
             Đồng bộ thực đơn sang kho
           </Button>
@@ -544,7 +546,7 @@ export default function Inventory() {
         </Card>
       )}
 
-      <Card title="M-07 Quản lý nguyên liệu">
+      <Card title="Quản lý nguyên liệu">
         <form onSubmit={submitIngredient} className="grid grid-cols-1 gap-3 md:grid-cols-5">
           <Input
             placeholder="Tên nguyên liệu"
@@ -702,7 +704,7 @@ export default function Inventory() {
         </div>
       </Card>
 
-      <Card title="M-08 Nhập hàng (tạo phiếu nhập)">
+      <Card title="Nhập hàng (tạo phiếu nhập)">
         <form onSubmit={submitReceipt} className="space-y-3">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <Input placeholder="Nhà cung cấp" value={receiptSupplier} onChange={(e) => setReceiptSupplier(e.target.value)} />
@@ -783,7 +785,7 @@ export default function Inventory() {
       </Card>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Card title="M-09 Kiểm kê / điều chỉnh tồn kho">
+        <Card title="Kiểm kê / điều chỉnh tồn kho">
           <form onSubmit={submitAdjustStock} className="grid grid-cols-1 gap-3">
             <select
               className={selectClass}
@@ -877,7 +879,7 @@ export default function Inventory() {
         </Card>
       </div>
 
-      <Card title="M-11 Lịch sử nhập / xuất">
+      <Card title="Lịch sử nhập / xuất">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-6">
           <select
             className={selectClass}
