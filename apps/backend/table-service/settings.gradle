@@ -1,1 +1,10 @@
+// Plugins (Spring Boot...) come from the same Maven Central mirror first; the Gradle Plugin Portal
+// otherwise redirects most of their jars to repo.maven.apache.org.
+pluginManagement {
+    repositories {
+        maven { url = uri('https://maven-central.storage-download.googleapis.com/maven2/') }
+        gradlePluginPortal()
+    }
+}
+
 rootProject.name = 'table-service'

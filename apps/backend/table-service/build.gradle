@@ -13,7 +13,10 @@ java {
     sourceCompatibility = '17'
 }
 
+// Google's official mirror of Maven Central first: repo.maven.apache.org has been dropping the TLS
+// handshake for CI runners and local builds ("Remote host terminated the handshake").
 repositories {
+    maven { url = uri('https://maven-central.storage-download.googleapis.com/maven2/') }
     mavenCentral()
 }
 
