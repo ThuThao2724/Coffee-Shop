@@ -6,7 +6,21 @@ import Input from '@/components/ui/Input'
 import api from '@/utils/api'
 import { useAuthStore } from '@/stores/authStore'
 import { useBranchScopeStore } from '@/stores/branchScopeStore'
-import { phuongThucThanhToan } from '@/utils/display'
+import { maDonHangNgan, phuongThucThanhToan } from '@/utils/display'
+
+const INVOICE_STATUS: Record<string, { label: string; className: string }> = {
+  ISSUED: { label: 'Đã phát hành', className: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
+  VOIDED: { label: 'Đã hủy', className: 'bg-rose-50 text-rose-700 ring-rose-200' },
+}
+
+function InvoiceStatusChip({ status }: { status: string }) {
+  const meta = INVOICE_STATUS[status] || { label: status, className: 'bg-slate-100 text-slate-600 ring-slate-200' }
+  return (
+    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${meta.className}`}>
+      {meta.label}
+    </span>
+  )
+}
 
 interface InvoiceItem {
   id: string
@@ -155,16 +169,16 @@ export default function Invoices() {
     if (!canRegenerate) return
     const orderId = regenerateOrderId.trim()
     if (!orderId) {
-      toast.error('Nhập orderId để regenerate hóa đơn')
+      toast.error('Nhập mã đơn hàng cần tạo lại hóa đơn')
       return
     }
     try {
       await api.post(`/orders/${orderId}/invoice/regenerate`)
-      toast.success('Regenerate hóa đơn thành công')
+      toast.success('Đã tạo lại hóa đơn')
       setRegenerateOrderId('')
       await load()
     } catch (error: any) {
-      toast.error(error.response?.data?.message || 'Regenerate hóa đơn thất bại')
+      toast.error(error.response?.data?.message || 'Tạo lại hóa đơn thất bại')
     }
   }
 
@@ -210,7 +224,7 @@ export default function Invoices() {
             <p className="text-xl font-bold text-emerald-700">{summaryRevenue.toLocaleString('vi-VN')}đ</p>
           </div>
           <div className="rounded-xl border border-amber-100 p-3">
-            <p className="text-xs text-slate-500">Tổng bản ghi (server)</p>
+            <p className="text-xs text-slate-500">Tổng số hóa đơn (mọi trang)</p>
             <p className="text-xl font-bold text-slate-900">{meta.total}</p>
           </div>
         </div>
@@ -224,9 +238,9 @@ export default function Invoices() {
           <select
             value={status}
             onChange={(e) => setStatus(e.target.value as any)}
-            className="min-h-11 rounded-xl border border-amber-100 px-3 text-sm"
+            className="min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
           >
-            <option value="ALL">Tất cả</option>
+            <option value="ALL">Tất cả trạng thái</option>
             <option value="ISSUED">Đã phát hành</option>
             <option value="VOIDED">Đã hủy</option>
           </select>
@@ -235,11 +249,11 @@ export default function Invoices() {
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Input
               className="w-full md:w-80"
-              placeholder="Order ID để regenerate invoice"
+              placeholder="Mã đơn hàng cần tạo lại hóa đơn"
               value={regenerateOrderId}
               onChange={(e) => setRegenerateOrderId(e.target.value)}
             />
-            <Button onClick={regenerateInvoice}>Regenerate</Button>
+            <Button variant="secondary" onClick={regenerateInvoice}>Tạo lại hóa đơn</Button>
           </div>
         )}
       </Card>
@@ -273,7 +287,7 @@ export default function Invoices() {
                     <td className="py-2">{new Date(row.issueDate).toLocaleString('vi-VN')}</td>
                     <td className="py-2">{row.customerName || 'Khách vãng lai'}</td>
                     <td className="py-2">{Number(row.totalAmount).toLocaleString('vi-VN')}đ</td>
-                    <td className="py-2">{row.status}</td>
+                    <td className="py-2"><InvoiceStatusChip status={row.status} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -298,17 +312,17 @@ export default function Invoices() {
           {!detailLoading && selected && (
             <div className="space-y-2 text-sm">
               <p className="font-semibold">{selected.invoiceNumber}</p>
-              <p>Đơn hàng: {selected.orderId}</p>
+              <p>Đơn hàng: <span title={selected.orderId}>{maDonHangNgan(selected.orderId)}</span></p>
               <p>Khách: {selected.customerName || 'Khách vãng lai'}</p>
               <p>Tổng cộng: {Number(selected.totalAmount).toLocaleString('vi-VN')}đ</p>
               <p>Thanh toán: {phuongThucThanhToan(selected.paymentMethod)}</p>
-              <p>Trạng thái: {selected.status}</p>
+              <p>Trạng thái: <InvoiceStatusChip status={selected.status} /></p>
               <div className="flex flex-wrap gap-2 pt-2">
                 <Button size="sm" variant="secondary" onClick={openPdf}>
                   Xem PDF
                 </Button>
                 {canVoid && selected.status !== 'VOIDED' && (
-                  <Button size="sm" onClick={voidInvoice}>Hủy hóa đơn</Button>
+                  <Button size="sm" variant="danger" onClick={voidInvoice}>Hủy hóa đơn</Button>
                 )}
               </div>
             </div>

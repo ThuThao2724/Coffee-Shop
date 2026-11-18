@@ -452,7 +452,7 @@ export default function Settings() {
           </div>
 
           <div className="mt-4 flex flex-wrap gap-2">
-            <Button size="sm" onClick={copyWebhookUrl}>Copy Webhook URL</Button>
+            <Button size="sm" variant="secondary" onClick={copyWebhookUrl}>Sao chép URL webhook</Button>
             <Button
               size="sm"
               variant="secondary"
