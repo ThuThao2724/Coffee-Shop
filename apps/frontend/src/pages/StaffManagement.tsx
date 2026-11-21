@@ -578,7 +578,7 @@ export default function StaffManagement() {
             onChange={(e) => setStaffRoleFilter(e.target.value as 'ALL' | StaffRole)}
           >
             <option value="ALL">Tất cả vai trò</option>
-            <option value="ADMIN">Quản trị hệ thống</option>
+            <option value="ADMIN">Quản lý chung</option>
             <option value="MANAGER">Quản lý</option>
             <option value="WAITER">Phục vụ</option>
             <option value="BARISTA">Pha chế</option>
@@ -650,7 +650,7 @@ export default function StaffManagement() {
               onChange={(e) => setStaffForm((prev) => ({ ...prev, role: e.target.value as StaffRole }))}
               disabled={Boolean(editingStaffId) && currentRole === 'MANAGER'}
             >
-              {assignableRoles.includes('ADMIN') && <option value="ADMIN">Quản trị hệ thống</option>}
+              {assignableRoles.includes('ADMIN') && <option value="ADMIN">Quản lý chung</option>}
               {assignableRoles.includes('MANAGER') && <option value="MANAGER">Quản lý</option>}
               {assignableRoles.includes('WAITER') && <option value="WAITER">Phục vụ</option>}
               {assignableRoles.includes('BARISTA') && <option value="BARISTA">Pha chế</option>}
