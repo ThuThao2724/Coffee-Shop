@@ -1,7 +1,7 @@
 export function vaiTroNhanVien(role?: string | null): string {
   switch (role) {
     case 'ADMIN':
-      return 'Quản trị hệ thống'
+      return 'Quản lý chung'
     case 'MANAGER':
       return 'Quản lý'
     case 'WAITER':
