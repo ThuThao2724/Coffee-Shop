@@ -1798,6 +1798,28 @@ async def startup_tasks() -> None:
         asyncio.create_task(forecast_cron_loop())
 
 
+# Ways people ask for the best / worst sellers ("nước nào bán nhiều nhất", "món nào bán ế"...).
+# They are answered by a rule, not by Gemini, which is slow and sometimes picks the wrong table.
+TOP_SELLER_WORDS = (
+    "bán chạy", "ban chay", "bán nhiều", "ban nhieu", "bán được nhiều", "ban duoc nhieu",
+    "phổ biến", "pho bien", "gọi nhiều", "goi nhieu", "ưa chuộng", "ua chuong", "best seller", "bestseller",
+)
+LEAST_SELLER_WORDS = (
+    "bán ít", "ban it", "bán chậm", "ban cham", "bán ế", "bán kém", "ban kem",
+    "ít người gọi", "it nguoi goi", "ít được gọi", "it duoc goi", "gọi ít", "goi it",
+)
+
+
+def top_items_direction(question: str) -> str | None:
+    """'DESC' for best-seller questions, 'ASC' for least-sold ones, None otherwise."""
+    q = question.lower()
+    if any(word in q for word in LEAST_SELLER_WORDS):
+        return "ASC"
+    if any(word in q for word in TOP_SELLER_WORDS):
+        return "DESC"
+    return None
+
+
 def map_question_to_sql(question: str, branch_id: str | None) -> str:
     q = question.lower()
     where = 'WHERE "branchId" = %s' if branch_id else ""
@@ -1807,10 +1829,12 @@ def map_question_to_sql(question: str, branch_id: str | None) -> str:
             f'SELECT COALESCE(SUM("predictedRevenue"), 0) AS revenue FROM sales_forecast {where} '
             f'{"AND" if where else "WHERE"} "forecastDate"::date = CURRENT_DATE'
         )
-    if "món" in q and ("bán chạy" in q or "ban chay" in q):
+    direction = top_items_direction(question)
+    if direction:
         return (
-            f'SELECT "menuItemId", MAX("menuItemName") AS "menuItemName", SUM(quantity)::int AS qty '
-            f'FROM item_sales {where} GROUP BY "menuItemId" ORDER BY qty DESC LIMIT 10'
+            f'SELECT "menuItemId", MAX("menuItemName") AS "menuItemName", SUM(quantity)::int AS qty, '
+            f'SUM(revenue)::bigint AS revenue '
+            f'FROM item_sales {where} GROUP BY "menuItemId" ORDER BY qty {direction} LIMIT 10'
         )
     if "bất thường" in q or "canh bao" in q or "cảnh báo" in q:
         return f'SELECT id, "alertType", severity, description, "isResolved", "detectedAt" FROM anomaly_alert {where} ORDER BY "detectedAt" DESC LIMIT 20'
@@ -1824,7 +1848,7 @@ def infer_report_intent(question: str) -> str:
     q = question.lower()
     if "doanh thu" in q:
         return "REVENUE_QUERY"
-    if "món" in q and ("bán chạy" in q or "ban chay" in q):
+    if top_items_direction(question):
         return "TOP_ITEMS_QUERY"
     if "bất thường" in q or "cảnh báo" in q or "canh bao" in q:
         return "ANOMALY_QUERY"
@@ -1833,22 +1857,83 @@ def infer_report_intent(question: str) -> str:
     return "GENERAL_QUERY"
 
 
-def summarize_sql_result(intent: str, rows: list[dict[str, Any]]) -> str:
+def summarize_sql_result(intent: str, rows: list[dict[str, Any]], question: str = "") -> str:
     if not rows:
         return "Không tìm thấy dữ liệu phù hợp trong phạm vi câu hỏi."
     if intent == "REVENUE_QUERY":
         revenue = decimal_from_any(rows[0].get("revenue"), 0)
-        return f"Doanh thu ước tính theo dữ liệu hiện có là {int(revenue):,}đ."
+        return f"Doanh thu ước tính theo dữ liệu hiện có là {_format_row_value('revenue', int(revenue))}."
     if intent == "TOP_ITEMS_QUERY":
-        top = rows[0]
-        name = top.get("menuItemName") or top.get("menuItemId", "N/A")
-        return f"Món dẫn đầu hiện tại là {name} với số lượng {top.get('qty', 0)}."
+        def item(row: dict[str, Any]) -> tuple[str, str]:
+            name = str(row.get("menuItemName") or row.get("menuItemId") or "N/A")
+            return name, _format_row_value("qty", decimal_from_any(row.get("qty"), 0))
+
+        lead = "Bán ít nhất" if top_items_direction(question) == "ASC" else "Bán chạy nhất"
+        name, qty = item(rows[0])
+        answer = f"{lead} là {name} với {qty} phần đã bán"
+        others = [f"{n} ({q})" for n, q in (item(row) for row in rows[1:3])]
+        if others:
+            answer += ", tiếp theo là " + " và ".join(others)
+        return answer + "."
     if intent == "ANOMALY_QUERY":
         return f"Có {len(rows)} cảnh báo bất thường gần nhất trong phạm vi truy vấn."
     if intent == "SENTIMENT_QUERY":
         parts = [f"{row.get('label', 'UNKNOWN')}: {row.get('count', 0)}" for row in rows[:3]]
         return "Phân bổ cảm xúc hiện tại: " + ", ".join(parts)
-    return f"Tìm thấy {len(rows)} dòng dữ liệu."
+    return describe_rows(rows)
+
+
+# Column names LLM-written SQL commonly uses, shown in Vietnamese in the fallback answer.
+ROW_COLUMN_LABELS = {
+    "qty": "số lượng", "quantity": "số lượng", "total_qty": "số lượng", "revenue": "doanh thu",
+    "total_revenue": "doanh thu", "totalRevenue": "doanh thu", "orderCount": "số đơn", "order_count": "số đơn",
+    "totalOrders": "số đơn", "avgOrderValue": "giá trị TB/đơn", "count": "số lượng", "date": "ngày",
+    "forecastDate": "ngày", "predictedRevenue": "doanh thu dự báo", "confidenceLow": "thấp nhất",
+    "confidenceHigh": "cao nhất",
+}
+ROW_NAME_COLUMNS = ("menuItemName", "name", "label", "date", "forecastDate")
+ROW_HIDDEN_COLUMNS = {"menuItemId", "id", "branchId"}
+
+
+def _format_row_value(column: str, value: Any) -> str:
+    if isinstance(value, bool) or value is None:
+        return str(value)
+    if isinstance(value, (int, float)) or type(value).__name__ == "Decimal":
+        number = float(value)
+        text = f"{number:,.0f}".replace(",", ".") if number == int(number) else f"{number:,.2f}"
+        money = any(word in column.lower() for word in ("revenue", "value", "confidence", "amount"))
+        return text + ("đ" if money else "")
+    text = str(value)
+    # Dates read back as "2026-11-24" or "2026-11-24 00:00:00": show them as 24/11/2026.
+    match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})(?:[ T]00:00:00)?", text)
+    if match:
+        return f"{match.group(3)}/{match.group(2)}/{match.group(1)}"
+    return text[:40]
+
+
+def describe_rows(rows: list[dict[str, Any]]) -> str:
+    """Readable answer from query rows when no LLM summary is available, e.g.
+    "Dẫn đầu: Ca phe sua (số lượng 3.000)." instead of "Tìm thấy 1 dòng dữ liệu"."""
+    if not rows:
+        return "Không tìm thấy dữ liệu phù hợp trong phạm vi câu hỏi."
+
+    def one(row: dict[str, Any]) -> str:
+        name_col = next((c for c in ROW_NAME_COLUMNS if row.get(c) not in (None, "")), None)
+        details = [
+            f"{ROW_COLUMN_LABELS.get(col, col)} {_format_row_value(col, val)}"
+            for col, val in row.items()
+            if col != name_col and col not in ROW_HIDDEN_COLUMNS and val is not None
+        ][:3]
+        name = _format_row_value(name_col, row[name_col]) if name_col else ""
+        if name and details:
+            return f"{name} ({', '.join(details)})"
+        return name or ", ".join(details)
+
+    if len(rows) == 1:
+        return f"Dẫn đầu: {one(rows[0])}." if any(rows[0].get(c) for c in ("menuItemName", "name")) else f"Kết quả: {one(rows[0])}."
+    listed = "; ".join(f"{idx + 1}. {one(row)}" for idx, row in enumerate(rows[:5]))
+    more = f" (và {len(rows) - 5} dòng khác)" if len(rows) > 5 else ""
+    return f"Kết quả: {listed}{more}."
 
 
 def answer_from_knowledge_base(question: str) -> tuple[str, str, float, bool]:
@@ -3081,7 +3166,7 @@ def is_generic_fallback_question(question):
     q = question.lower()
     if "doanh thu" in q and ("hôm nay" in q or "hom nay" in q):
         return False
-    if "món" in q and ("bán chạy" in q or "ban chay" in q):
+    if top_items_direction(question):
         return False
     if "bất thường" in q or "cảnh báo" in q or "canh bao" in q:
         return False
@@ -3132,14 +3217,20 @@ def report_chat(payload: ReportChatPayload, request: Request) -> dict[str, Any]:
         else:
             params = [branch_id] if branch_id and "%s" in sql else []
         rows = execute_untrusted_report_sql(sql) if sql_source == "gemini" else execute_sql(sql, params)
-        if sql_source == "gemini":
-            answer = summarize_with_gemini(sanitized_question, rows) or summarize_sql_result(intent, rows)
-        else:
-            answer = summarize_sql_result(intent, rows)
     except Exception as error:
         success = False
         error_message = str(error)
-        answer = "Khong the thuc thi truy van bao cao tai thoi diem nay."
+        answer = "Không thể thực hiện truy vấn báo cáo lúc này. Vui lòng thử lại sau."
+    else:
+        # The query already ran: a slow or failing Gemini summary must not turn the answer into an
+        # error (it used to time out and report "Khong the thuc thi truy van" with the rows in hand).
+        answer = ""
+        if sql_source == "gemini":
+            try:
+                answer = summarize_with_gemini(sanitized_question, rows) or ""
+            except Exception as error:  # pylint: disable=broad-except
+                error_message = f"summary: {error}"
+        answer = answer or summarize_sql_result(intent, rows, sanitized_question)
 
     execution_ms = int((time.perf_counter() - start) * 1000)
     log_audit(
